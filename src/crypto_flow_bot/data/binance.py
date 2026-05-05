@@ -11,7 +11,7 @@ import json
 import logging
 from collections import deque
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import httpx
 import websockets
@@ -142,7 +142,7 @@ class LiquidationStream:
         return long_liq, short_liq
 
     def _evict_old(self) -> None:
-        cutoff = datetime.now(tz=timezone.utc) - self.window
+        cutoff = datetime.now(tz=UTC) - self.window
         while self._events and self._events[0].ts < cutoff:
             self._events.popleft()
 
@@ -173,11 +173,11 @@ class LiquidationStream:
                                 symbol=symbol,
                                 side=side,
                                 notional_usd=notional,
-                                ts=datetime.now(tz=timezone.utc),
+                                ts=datetime.now(tz=UTC),
                             )
                         )
                         self._evict_old()
-            except (websockets.WebSocketException, OSError, asyncio.TimeoutError) as e:
+            except (TimeoutError, websockets.WebSocketException, OSError) as e:
                 if self._stopped.is_set():
                     break
                 log.warning("liquidation stream disconnected: %s; retrying in %.1fs", e, backoff)
@@ -215,7 +215,7 @@ async def build_snapshot(
     long_liq, short_liq = liq_stream.totals(symbol)
     return Snapshot(
         symbol=symbol,
-        ts=datetime.now(tz=timezone.utc),
+        ts=datetime.now(tz=UTC),
         price=price,
         funding_rate=funding,
         open_interest_usd=oi_now,

@@ -124,3 +124,38 @@ def format_heartbeat(open_count: int, watched: list[str]) -> Alert:
         f"  Open virtual positions: {open_count}"
     )
     return Alert(kind="HEARTBEAT", symbol="*", ts=utcnow(), text=text)
+
+
+def format_startup(cfg: Config, version: str) -> Alert:
+    pretty = ", ".join(cfg.notifier.pretty_names.get(s, s) for s in cfg.symbols)
+    rules = []
+    s = cfg.signals
+    if s.funding_extreme.enabled:
+        rules.append(
+            f"funding ≥ {s.funding_extreme.long_overheated_above * 100:+.3f}% / "
+            f"≤ {s.funding_extreme.short_overheated_below * 100:+.3f}%"
+        )
+    if s.oi_surge.enabled:
+        rules.append(
+            f"OI Δ ≥ {s.oi_surge.pct_change_threshold * 100:.1f}% / {s.oi_surge.window_minutes}min"
+        )
+    if s.lsr_extreme.enabled:
+        rules.append(
+            f"top L/S ≥ {s.lsr_extreme.long_heavy_above:.2f} or ≤ {s.lsr_extreme.short_heavy_below:.2f}"
+        )
+    if s.liq_cascade.enabled:
+        rules.append(
+            f"one-sided liq ≥ ${s.liq_cascade.usd_threshold / 1e6:.0f}M / "
+            f"{s.liq_cascade.window_minutes}min"
+        )
+    rules_block = "\n".join(f"  • {r}" for r in rules) if rules else "  (no rules enabled)"
+    text = (
+        f"🤖 <b>crypto-flow-bot v{version} started</b>\n"
+        f"  Watching: {pretty}\n"
+        f"  Poll: every {cfg.poll_interval_seconds}s\n"
+        f"\n<b>Signal rules:</b>\n{rules_block}\n"
+        f"\n<b>Exits:</b> SL {cfg.exits.stop_loss_pct * 100:.2f}% · "
+        f"TP ladder {len(cfg.exits.take_profit_levels)} steps · "
+        f"time stop {cfg.exits.time_stop_minutes}min"
+    )
+    return Alert(kind="STARTUP", symbol="*", ts=utcnow(), text=text)

@@ -12,6 +12,7 @@ from datetime import UTC, datetime, timedelta
 import httpx
 from dotenv import load_dotenv
 
+from crypto_flow_bot import __version__
 from crypto_flow_bot.config import Config, load_config
 from crypto_flow_bot.data.binance import BinanceClient, LiquidationStream, build_snapshot
 from crypto_flow_bot.engine.exits import evaluate_exit
@@ -24,6 +25,7 @@ from crypto_flow_bot.notify.telegram import (
     format_entry_alert,
     format_exit_alert,
     format_heartbeat,
+    format_startup,
 )
 
 log = logging.getLogger(__name__)
@@ -201,6 +203,13 @@ async def amain() -> None:
         "crypto-flow-bot started; watching %s every %ds",
         ", ".join(cfg.symbols), cfg.poll_interval_seconds,
     )
+    if cfg.notifier.send_startup_message:
+        startup = format_startup(cfg, __version__)
+        try:
+            await notifier.send(startup.text)
+            await logger.write_alert(startup)
+        except Exception as e:
+            log.warning("startup notification failed: %s", e)
     try:
         await bot.run()
     finally:
