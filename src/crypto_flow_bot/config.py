@@ -78,6 +78,7 @@ class ExitsCfg(BaseModel):
 
 class NotifierCfg(BaseModel):
     pretty_names: dict[str, str] = Field(default_factory=dict)
+    send_startup_message: bool = True
     silent_when_idle: bool = True
     heartbeat_minutes: int = 60
 
