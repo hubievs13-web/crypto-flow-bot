@@ -1,0 +1,49 @@
+[project]
+name = "crypto-flow-bot"
+version = "0.1.0"
+description = "Telegram alerts on Binance funding/OI/LSR/liquidation extremes with SL/TP/trailing/time/reason-invalidation exits."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "hubievs13-web" }]
+dependencies = [
+    "httpx>=0.27,<1",
+    "websockets>=12,<14",
+    "pydantic>=2.7,<3",
+    "PyYAML>=6,<7",
+    "python-dotenv>=1.0,<2",
+    "tenacity>=8.2,<10",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8,<9",
+    "pytest-asyncio>=0.23,<1",
+    "ruff>=0.6,<1",
+    "mypy>=1.10,<2",
+    "types-PyYAML",
+]
+
+[project.scripts]
+crypto-flow-bot = "crypto_flow_bot.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/crypto_flow_bot"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "C4", "ARG"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["src"]

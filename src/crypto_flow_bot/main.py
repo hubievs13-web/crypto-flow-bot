@@ -1,0 +1,219 @@
+"""Main async loop: poll snapshots, evaluate signals/exits, dispatch alerts."""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import logging
+import os
+import signal
+from datetime import UTC, datetime, timedelta
+
+import httpx
+from dotenv import load_dotenv
+
+from crypto_flow_bot.config import Config, load_config
+from crypto_flow_bot.data.binance import BinanceClient, LiquidationStream, build_snapshot
+from crypto_flow_bot.engine.exits import evaluate_exit
+from crypto_flow_bot.engine.models import Snapshot
+from crypto_flow_bot.engine.signals import evaluate
+from crypto_flow_bot.engine.state import StateStore
+from crypto_flow_bot.log.store import JsonlLogger
+from crypto_flow_bot.notify.telegram import (
+    TelegramNotifier,
+    format_entry_alert,
+    format_exit_alert,
+    format_heartbeat,
+)
+
+log = logging.getLogger(__name__)
+
+
+def _setup_logging() -> None:
+    level = os.environ.get("CRYPTO_FLOW_BOT_LOG_LEVEL", "INFO").upper()
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+
+
+def _read_env() -> tuple[str, list[str]]:
+    token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+    chat_ids_raw = os.environ.get("TELEGRAM_CHAT_IDS", "").strip()
+    if not token:
+        raise RuntimeError("TELEGRAM_BOT_TOKEN env var is required")
+    if not chat_ids_raw:
+        raise RuntimeError("TELEGRAM_CHAT_IDS env var is required (comma-separated chat ids)")
+    chat_ids = [c.strip() for c in chat_ids_raw.split(",") if c.strip()]
+    return token, chat_ids
+
+
+class Bot:
+    def __init__(
+        self,
+        cfg: Config,
+        client: BinanceClient,
+        liq_stream: LiquidationStream,
+        notifier: TelegramNotifier,
+        state: StateStore,
+        logger: JsonlLogger,
+    ) -> None:
+        self.cfg = cfg
+        self.client = client
+        self.liq_stream = liq_stream
+        self.notifier = notifier
+        self.state = state
+        self.logger = logger
+        self._stop = asyncio.Event()
+        self._last_heartbeat = datetime.now(tz=UTC)
+
+    def request_stop(self) -> None:
+        self._stop.set()
+
+    async def run(self) -> None:
+        self.liq_stream.start()
+        try:
+            await asyncio.gather(
+                self._poll_loop(),
+                self._exit_loop(),
+                self._heartbeat_loop(),
+            )
+        finally:
+            await self.liq_stream.stop()
+
+    # ---------- loops ----------
+
+    async def _poll_loop(self) -> None:
+        while not self._stop.is_set():
+            for symbol in self.cfg.symbols:
+                try:
+                    snap = await build_snapshot(
+                        self.client,
+                        self.liq_stream,
+                        symbol,
+                        oi_window_minutes=self.cfg.signals.oi_surge.window_minutes,
+                    )
+                except Exception as e:
+                    log.warning("snapshot for %s failed: %s", symbol, e)
+                    continue
+                await self.logger.write_snapshot(snap)
+                await self._handle_entry_signals(snap)
+            await self._sleep(self.cfg.poll_interval_seconds)
+
+    async def _exit_loop(self) -> None:
+        # We need fresh prices to check SL/TP. Reuse the latest mark price call (cheap).
+        while not self._stop.is_set():
+            for pos in list(self.state.open_positions()):
+                try:
+                    price = await self.client.latest_price(pos.symbol)
+                except Exception as e:
+                    log.warning("price for %s failed: %s", pos.symbol, e)
+                    continue
+                # Build a slim snapshot for evaluate_exit (only price + previously seen metrics).
+                snap = Snapshot(symbol=pos.symbol, ts=datetime.now(tz=UTC), price=price)
+                events = evaluate_exit(pos, snap, self.cfg)
+                for ev in events:
+                    await self._handle_exit_event(pos, ev, price)
+            self.state.save()
+            await self._sleep(self.cfg.exit_check_interval_seconds)
+
+    async def _heartbeat_loop(self) -> None:
+        while not self._stop.is_set():
+            await self._sleep(60)
+            if self.cfg.notifier.silent_when_idle:
+                continue
+            now = datetime.now(tz=UTC)
+            if now - self._last_heartbeat >= timedelta(minutes=self.cfg.notifier.heartbeat_minutes):
+                self._last_heartbeat = now
+                hb = format_heartbeat(len(self.state.open_positions()), self.cfg.symbols)
+                await self.notifier.send(hb.text)
+                await self.logger.write_alert(hb)
+
+    # ---------- entry / exit handling ----------
+
+    async def _handle_entry_signals(self, snap: Snapshot) -> None:
+        for candidate in evaluate(snap, self.cfg):
+            cd = self.state.cooldown_remaining_seconds(
+                candidate.symbol, candidate.direction, self.cfg.alert_cooldown_seconds
+            )
+            if cd > 0:
+                log.debug("cooldown active for %s %s: %.0fs left", candidate.symbol, candidate.direction.value, cd)
+                continue
+            existing = self.state.open_for(candidate.symbol, candidate.direction)
+            if existing is not None:
+                log.debug("position already open for %s %s; skip", candidate.symbol, candidate.direction.value)
+                continue
+            if self.state.open_for(candidate.symbol, candidate.direction.opposite) is not None:
+                log.info(
+                    "skipping new %s entry for %s — opposite-side position already open",
+                    candidate.direction.value, candidate.symbol,
+                )
+                continue
+            position = self.state.open_from_signal(candidate, self.cfg)
+            self.state.mark_alerted(candidate.symbol, candidate.direction)
+            self.state.save()
+            alert = format_entry_alert(candidate, position, self.cfg)
+            await self.notifier.send(alert.text)
+            await self.logger.write_alert(alert)
+            await self.logger.write_position(position)
+
+    async def _handle_exit_event(self, position, ev, price: float) -> None:  # type: ignore[no-untyped-def]
+        cfg = self.cfg
+        if ev.kind == "TRAILING_MOVE":
+            if ev.new_stop_loss_price is not None:
+                position.stop_loss_price = ev.new_stop_loss_price
+        elif ev.fraction_closed > 0:
+            self.state.close_position(position, price, reason=ev.kind, fraction=ev.fraction_closed)
+        alert = format_exit_alert(position, ev, price, cfg)
+        await self.notifier.send(alert.text)
+        await self.logger.write_alert(alert)
+        await self.logger.write_position(position)
+
+    async def _sleep(self, seconds: float) -> None:
+        try:
+            await asyncio.wait_for(self._stop.wait(), timeout=seconds)
+        except TimeoutError:
+            return
+
+
+async def amain() -> None:
+    load_dotenv()
+    _setup_logging()
+    cfg = load_config()
+    token, chat_ids = _read_env()
+
+    http = httpx.AsyncClient(timeout=10.0)
+    binance = BinanceClient(http=httpx.AsyncClient(base_url="https://fapi.binance.com", timeout=10.0))
+    liq = LiquidationStream(window_minutes=cfg.signals.liq_cascade.window_minutes)
+    notifier = TelegramNotifier(token, chat_ids, http=http)
+    state = StateStore()
+    logger = JsonlLogger()
+
+    bot = Bot(cfg, binance, liq, notifier, state, logger)
+
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        # add_signal_handler isn't implemented on Windows.
+        with contextlib.suppress(NotImplementedError):
+            loop.add_signal_handler(sig, bot.request_stop)
+
+    log.info(
+        "crypto-flow-bot started; watching %s every %ds",
+        ", ".join(cfg.symbols), cfg.poll_interval_seconds,
+    )
+    try:
+        await bot.run()
+    finally:
+        await binance.aclose()
+        await notifier.aclose()
+        await http.aclose()
+        state.save()
+        log.info("crypto-flow-bot stopped")
+
+
+def main() -> None:
+    asyncio.run(amain())
+
+
+if __name__ == "__main__":
+    main()

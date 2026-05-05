@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Virtual envs
+.venv/
+venv/
+env/
+.env
+
+# Local config / state / logs (top-level runtime dirs only — the package
+# subpackage `src/crypto_flow_bot/data/` is intentionally NOT excluded).
+config.local.yaml
+/state/
+/data/
+/logs/
+*.jsonl
+*.parquet
+*.sqlite
+*.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Fly.io
+.fly/

@@ -1,0 +1,96 @@
+# crypto-flow-bot — default thresholds.
+# Tune these as you observe alert quality. Each block has a short comment so a
+# non-coder can change them.
+
+# Symbols to watch (Binance USD-M perpetual futures).
+symbols:
+  - BTCUSDT
+  - ETHUSDT
+  - SOLUSDT
+
+# How often to poll funding/OI/LSR/price (seconds).
+poll_interval_seconds: 60
+
+# How often to re-evaluate open virtual positions (seconds).
+exit_check_interval_seconds: 5
+
+# Minimum gap between two entry alerts on the same symbol+direction (seconds).
+# Prevents spam when a metric oscillates around a threshold.
+alert_cooldown_seconds: 1800  # 30 min
+
+# ─── Entry signals ──────────────────────────────────────────────────────────
+# A "signal" fires when its rule says so AND no other signal has fired for the
+# same symbol+direction within the cooldown window. Multiple signals are OR-ed
+# (any of them is enough). The signal engine reports which rule(s) fired.
+
+signals:
+  # Funding rate extreme.
+  # Binance funding is paid every 8h. Per-bar values you see in the API are the
+  # 8h rate, NOT the per-bar rate. +0.01% = neutral, +0.05% = warm, +0.10% = hot.
+  funding_extreme:
+    enabled: true
+    long_overheated_above: 0.0008    # 0.08% / 8h -> short signal
+    short_overheated_below: -0.0005  # -0.05% / 8h -> long signal
+
+  # Open Interest surge: large OI growth + price direction reveals fresh flow.
+  oi_surge:
+    enabled: true
+    window_minutes: 60          # measure OI change over this window
+    pct_change_threshold: 0.05  # 5% growth in window
+    require_price_aligned: true # only fire if price moved in the same direction
+
+  # Top traders long/short ratio extreme (Binance topLongShortPositionRatio).
+  lsr_extreme:
+    enabled: true
+    long_heavy_above: 2.5  # ratio > 2.5 -> crowded longs -> short signal
+    short_heavy_below: 0.6 # ratio < 0.6 -> crowded shorts -> long signal
+
+  # Liquidation cascade: large recent liquidations imply a flush.
+  # After a flush, price often reverses (squeeze).
+  liq_cascade:
+    enabled: true
+    window_minutes: 5
+    usd_threshold: 50_000_000  # $50M of one-sided liquidations in window
+
+# ─── Exit rules (applied to the "virtual" position the bot tracks) ──────────
+# The bot does NOT execute orders. It only TELLS you to exit, in three ways.
+
+exits:
+  # Hard stop-loss as % from entry. Closes the whole virtual position.
+  stop_loss_pct: 0.015  # 1.5%
+
+  # Take-profit ladder. Each level closes the configured fraction.
+  # Fractions must sum to <= 1.0; the rest is left open until SL or other rule.
+  take_profit_levels:
+    - { pct: 0.015, fraction: 0.5 }
+    - { pct: 0.030, fraction: 0.5 }
+
+  # Trailing stop: once price has moved this far in your favor, lock in
+  # `lock_in_pct` of profit (move stop to entry + lock_in_pct).
+  trailing:
+    enabled: true
+    activate_at_pct: 0.015 # start trailing after +1.5%
+    lock_in_pct: 0.0       # 0.0 = move SL to break-even
+
+  # Time stop: close the position after this long if no other exit fired.
+  time_stop_minutes: 240   # 4 hours
+
+  # Reason-invalidation: close (in break-even) when the metric that triggered
+  # the entry has normalized.
+  reason_invalidation:
+    enabled: true
+    funding_normalized_below_abs: 0.0002  # close shorts when |funding| < 0.02%
+    lsr_normalized_band: [0.85, 1.15]      # close LSR-driven trades when ratio is back here
+
+# ─── Notifier formatting ────────────────────────────────────────────────────
+notifier:
+  # Per-symbol pretty names (optional; defaults to the symbol).
+  pretty_names:
+    BTCUSDT: BTC
+    ETHUSDT: ETH
+    SOLUSDT: SOL
+
+  # If true, every poll cycle that produces no signal is silent. If false, a
+  # heartbeat is sent every `heartbeat_minutes`.
+  silent_when_idle: true
+  heartbeat_minutes: 60

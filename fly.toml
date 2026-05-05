@@ -1,0 +1,27 @@
+# Fly.io configuration for crypto-flow-bot.
+# Replace `app = "..."` with your actual app name (set automatically by `fly launch`).
+# Run `fly secrets set TELEGRAM_BOT_TOKEN=... TELEGRAM_CHAT_IDS=...` before first deploy.
+
+app = "crypto-flow-bot"
+primary_region = "fra"  # Frankfurt; pick the region nearest you.
+
+[build]
+
+# A persistent volume for state.json and JSONL logs so we don't lose them on
+# restarts/redeploys. Create once with: fly volumes create state --size 1 --region fra
+[mounts]
+  source = "state"
+  destination = "/app"
+
+[env]
+  PYTHONUNBUFFERED = "1"
+  CRYPTO_FLOW_BOT_LOG_LEVEL = "INFO"
+
+# No public HTTP service — the bot is a long-running worker.
+[processes]
+  app = "python -m crypto_flow_bot"
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 1
+  memory = "256mb"

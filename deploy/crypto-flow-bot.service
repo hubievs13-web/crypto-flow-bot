@@ -1,0 +1,23 @@
+[Unit]
+Description=crypto-flow-bot — Binance/funding/OI/LSR/liquidation alerts to Telegram
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=botuser
+WorkingDirectory=/opt/crypto-flow-bot
+EnvironmentFile=/opt/crypto-flow-bot/.env
+ExecStart=/opt/crypto-flow-bot/.venv/bin/python -m crypto_flow_bot
+Restart=on-failure
+RestartSec=10s
+
+# Hardening (optional but sensible).
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/crypto-flow-bot/state /opt/crypto-flow-bot/logs
+
+[Install]
+WantedBy=multi-user.target

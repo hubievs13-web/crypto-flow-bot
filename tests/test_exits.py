@@ -1,0 +1,112 @@
+from datetime import UTC, datetime, timedelta
+
+from crypto_flow_bot.config import Config
+from crypto_flow_bot.engine.exits import evaluate_exit
+from crypto_flow_bot.engine.models import Direction, Position, Snapshot, TpLevelState
+
+
+def _cfg() -> Config:
+    return Config(symbols=["BTCUSDT"])
+
+
+def _long_position(entry: float = 100.0, age_minutes: float = 0.0, reason: str = "funding_extreme") -> Position:
+    cfg = _cfg()
+    sl = entry * (1 - cfg.exits.stop_loss_pct)
+    return Position(
+        id="t1",
+        symbol="BTCUSDT",
+        direction=Direction.LONG,
+        entry_price=entry,
+        entry_ts=datetime.now(tz=UTC) - timedelta(minutes=age_minutes),
+        reason=reason,
+        stop_loss_price=sl,
+        initial_stop_loss_price=sl,
+        tp_levels=[TpLevelState(pct=lvl.pct, fraction=lvl.fraction) for lvl in cfg.exits.take_profit_levels],
+    )
+
+
+def _short_position(entry: float = 100.0, age_minutes: float = 0.0, reason: str = "funding_extreme") -> Position:
+    cfg = _cfg()
+    sl = entry * (1 + cfg.exits.stop_loss_pct)
+    return Position(
+        id="t1",
+        symbol="BTCUSDT",
+        direction=Direction.SHORT,
+        entry_price=entry,
+        entry_ts=datetime.now(tz=UTC) - timedelta(minutes=age_minutes),
+        reason=reason,
+        stop_loss_price=sl,
+        initial_stop_loss_price=sl,
+        tp_levels=[TpLevelState(pct=lvl.pct, fraction=lvl.fraction) for lvl in cfg.exits.take_profit_levels],
+    )
+
+
+def _snap(price: float) -> Snapshot:
+    return Snapshot(symbol="BTCUSDT", ts=datetime.now(tz=UTC), price=price)
+
+
+def test_long_sl_hit_triggers_full_close():
+    pos = _long_position(entry=100.0)
+    # Drop below SL (1.5% = 98.5)
+    events = evaluate_exit(pos, _snap(98.0), _cfg())
+    kinds = [e.kind for e in events]
+    assert "SL_HIT" in kinds
+    assert events[-1].fraction_closed == pos.open_fraction
+
+
+def test_short_sl_hit_triggers_full_close():
+    pos = _short_position(entry=100.0)
+    events = evaluate_exit(pos, _snap(102.0), _cfg())
+    kinds = [e.kind for e in events]
+    assert "SL_HIT" in kinds
+
+
+def test_first_tp_level_fires_then_second():
+    pos = _long_position(entry=100.0)
+    # +1.5% -> first TP
+    events = evaluate_exit(pos, _snap(101.5), _cfg())
+    tp_events = [e for e in events if e.kind == "TP_HIT"]
+    assert len(tp_events) == 1
+    assert tp_events[0].fraction_closed == 0.5
+    # First level marked hit
+    assert pos.tp_levels[0].hit
+    # Now jump to +3% -> second TP fires (first won't re-fire)
+    events2 = evaluate_exit(pos, _snap(103.0), _cfg())
+    tp_events2 = [e for e in events2 if e.kind == "TP_HIT"]
+    assert len(tp_events2) == 1
+    assert tp_events2[0].fraction_closed == 0.5
+
+
+def test_trailing_moves_stop_to_breakeven_after_activation():
+    pos = _long_position(entry=100.0)
+    cfg = _cfg()
+    assert pos.stop_loss_price < 100.0  # initial SL below entry
+    # Hit +1.5% -> trailing activates, lock_in_pct default 0 -> SL to entry.
+    events = evaluate_exit(pos, _snap(101.5), cfg)
+    trail = [e for e in events if e.kind == "TRAILING_MOVE"]
+    assert len(trail) == 1
+    assert trail[0].new_stop_loss_price == 100.0
+
+
+def test_time_stop_after_configured_minutes():
+    cfg = _cfg()
+    pos = _long_position(entry=100.0, age_minutes=cfg.exits.time_stop_minutes + 1)
+    events = evaluate_exit(pos, _snap(100.5), cfg)
+    assert any(e.kind == "TIME_STOP" for e in events)
+
+
+def test_reason_invalidation_on_funding_normalization():
+    cfg = _cfg()
+    pos = _short_position(entry=100.0, reason="funding_extreme")
+    snap = Snapshot(
+        symbol="BTCUSDT", ts=datetime.now(tz=UTC), price=99.9, funding_rate=0.00005
+    )
+    events = evaluate_exit(pos, snap, cfg)
+    assert any(e.kind == "REASON_INVALIDATED" for e in events)
+
+
+def test_no_events_when_position_calm():
+    pos = _long_position(entry=100.0)
+    events = evaluate_exit(pos, _snap(100.5), _cfg())
+    # Slight move up — no SL, no TP, no trailing, no time stop, no reason data.
+    assert events == []
