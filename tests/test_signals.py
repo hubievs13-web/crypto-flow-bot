@@ -130,3 +130,38 @@ def test_trend_filter_passes_aligned_signal():
     snap = _snap(price=50000.0, ema50_1h=49000.0, funding_rate=-0.0015)
     out = evaluate(snap, _cfg())
     assert any(c.direction is Direction.LONG for c in out)
+
+
+# ─── liq_cascade aggregated vs Binance-only ────────────────────────────────
+
+def test_liq_cascade_uses_aggregated_threshold_when_available():
+    # Binance-only counter is below its threshold ($100M) but aggregated is
+    # above the aggregated threshold ($300M default) -> should fire.
+    snap = _snap(
+        long_liquidations_usd_window=20_000_000.0,           # below binance thr
+        aggregated_long_liquidations_usd=350_000_000.0,      # above aggregated thr
+        aggregated_short_liquidations_usd=10_000_000.0,
+    )
+    out = evaluate(snap, _cfg())
+    longs = [c for c in out if c.direction is Direction.LONG]
+    assert longs and any("aggregated" in r.description for r in longs[0].fired_rules)
+
+
+def test_liq_cascade_falls_back_to_binance_when_aggregated_missing():
+    # No aggregated values -> falls back to Binance counter & Binance threshold.
+    snap = _snap(long_liquidations_usd_window=80_000_000.0)
+    out = evaluate(snap, _cfg())
+    longs = [c for c in out if c.direction is Direction.LONG]
+    assert longs and any("binance" in r.description for r in longs[0].fired_rules)
+
+
+def test_liq_cascade_aggregated_below_threshold_does_not_fire():
+    # Aggregated values present but below the (much higher) aggregated threshold:
+    # do NOT fall back to the Binance threshold.
+    snap = _snap(
+        long_liquidations_usd_window=200_000_000.0,          # would fire on binance thr
+        aggregated_long_liquidations_usd=100_000_000.0,      # below aggregated thr
+        aggregated_short_liquidations_usd=50_000_000.0,
+    )
+    out = evaluate(snap, _cfg())
+    assert all(not any(r.name == "liq_cascade" for r in c.fired_rules) for c in out)

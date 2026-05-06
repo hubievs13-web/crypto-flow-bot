@@ -41,8 +41,14 @@ class Snapshot:
     long_short_ratio: float | None = None  # top traders position ratio
 
     # Sum of one-sided liquidations notional (USD) within the configured window.
+    # Binance-only (from the WebSocket stream).
     long_liquidations_usd_window: float = 0.0
     short_liquidations_usd_window: float = 0.0
+
+    # Cross-exchange aggregated liquidations (Coinglass). When populated these
+    # take priority over the Binance-only counters in the liq_cascade rule.
+    aggregated_long_liquidations_usd: float | None = None
+    aggregated_short_liquidations_usd: float | None = None
 
     # 1h kline derivatives — used for OI alignment, trend filtering, and ATR sizing.
     price_change_pct_1h: float | None = None  # last fully-closed 1h bar vs the one before

@@ -31,7 +31,22 @@ class LsrExtremeCfg(BaseModel):
 class LiqCascadeCfg(BaseModel):
     enabled: bool = True
     window_minutes: int = 5
+    # Threshold used when only Binance WS liquidation stream is available.
     usd_threshold: float = 50_000_000
+    # Threshold used when Coinglass cross-exchange aggregated data is available.
+    # Aggregated numbers are typically 3-5x larger than Binance-only.
+    coinglass_aggregated_threshold: float = 300_000_000
+
+
+class CoinglassCfg(BaseModel):
+    """Cross-exchange aggregated liquidation data.
+
+    Only takes effect when `COINGLASS_API_KEY` is set in the environment. With
+    no key, the bot silently falls back to Binance-only WS liquidations.
+    """
+
+    enabled: bool = True
+    interval: str = "1h"  # 1m,5m,15m,30m,1h,4h,...; free tier may require >=1h
 
 
 class TrendFilterCfg(BaseModel):
@@ -111,6 +126,16 @@ class NotifierCfg(BaseModel):
     command_poll_interval_seconds: int = 5
 
 
+class StatsCfg(BaseModel):
+    """Weekly stats digest. Sends a summary of the last `window_days` of signals
+    every week at the configured weekday/hour (UTC)."""
+
+    enabled: bool = True
+    weekday: int = 0       # 0=Mon, 1=Tue, ..., 6=Sun
+    hour_utc: int = 12     # send at this hour (UTC)
+    window_days: int = 7   # rolling window of positions to summarize
+
+
 class Config(BaseModel):
     symbols: list[str]
     poll_interval_seconds: int = 60
@@ -119,6 +144,8 @@ class Config(BaseModel):
     signals: SignalsCfg = Field(default_factory=SignalsCfg)
     exits: ExitsCfg = Field(default_factory=ExitsCfg)
     notifier: NotifierCfg = Field(default_factory=NotifierCfg)
+    coinglass: CoinglassCfg = Field(default_factory=CoinglassCfg)
+    stats: StatsCfg = Field(default_factory=StatsCfg)
 
 
 def load_config(path: str | os.PathLike[str] | None = None) -> Config:

@@ -36,6 +36,14 @@ class JsonlLogger:
         self._pos_file = d / "positions.jsonl"
         self._lock = asyncio.Lock()
 
+    @property
+    def positions_path(self) -> Path:
+        return self._pos_file
+
+    @property
+    def alerts_path(self) -> Path:
+        return self._alert_file
+
     async def _append(self, file: Path, payload: dict) -> None:
         line = json.dumps(payload, ensure_ascii=False)
         async with self._lock:

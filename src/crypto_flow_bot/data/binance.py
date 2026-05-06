@@ -17,6 +17,7 @@ import httpx
 import websockets
 from tenacity import AsyncRetrying, retry_if_exception_type, stop_after_attempt, wait_exponential
 
+from crypto_flow_bot.data.coinglass import CoinglassClient, base_coin_from_symbol
 from crypto_flow_bot.engine.models import Snapshot
 
 log = logging.getLogger(__name__)
@@ -238,15 +239,29 @@ async def build_snapshot(
     liq_stream: LiquidationStream,
     symbol: str,
     oi_window_minutes: int,
+    coinglass: CoinglassClient | None = None,
+    coinglass_interval: str = "1h",
 ) -> Snapshot:
-    """Pull a fresh snapshot for a symbol, combining REST data and the WS-driven liq totals."""
-    funding, oi_now, lsr, price, oi_hist, klines = await asyncio.gather(
+    """Pull a fresh snapshot for a symbol.
+
+    Combines REST data and the WS-driven Binance liquidation totals. When a
+    Coinglass client is supplied, also fetches cross-exchange aggregated
+    liquidations for the most recent closed bar; on failure those fields stay
+    None and the caller falls back to Binance-only.
+    """
+    coinglass_call = (
+        coinglass.aggregated_liquidations(base_coin_from_symbol(symbol), coinglass_interval)
+        if coinglass is not None
+        else _none_async()
+    )
+    funding, oi_now, lsr, price, oi_hist, klines, agg_liq = await asyncio.gather(
         client.funding_rate(symbol),
         client.open_interest_usd(symbol),
         client.top_long_short_position_ratio(symbol),
         client.latest_price(symbol),
         client.open_interest_history(symbol, period="5m", limit=max(2, oi_window_minutes // 5 + 1)),
         client.klines_1h(symbol, limit=51),
+        coinglass_call,
     )
 
     oi_change_pct: float | None = None
@@ -277,6 +292,10 @@ async def build_snapshot(
             pass
 
     long_liq, short_liq = liq_stream.totals(symbol)
+    agg_long: float | None = None
+    agg_short: float | None = None
+    if agg_liq is not None:
+        agg_long, agg_short = agg_liq
     return Snapshot(
         symbol=symbol,
         ts=datetime.now(tz=UTC),
@@ -287,7 +306,14 @@ async def build_snapshot(
         long_short_ratio=lsr,
         long_liquidations_usd_window=long_liq,
         short_liquidations_usd_window=short_liq,
+        aggregated_long_liquidations_usd=agg_long,
+        aggregated_short_liquidations_usd=agg_short,
         price_change_pct_1h=price_change_pct_1h,
         ema50_1h=ema50_1h,
         atr_1h=atr_1h,
     )
+
+
+async def _none_async() -> None:
+    """Helper for `asyncio.gather` placeholder when Coinglass is not configured."""
+    return None

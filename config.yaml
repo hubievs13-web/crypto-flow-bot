@@ -53,11 +53,15 @@ signals:
     short_heavy_below: 0.5  # ratio < 0.5 -> very crowded shorts -> long signal
 
   # Liquidation cascade.
-  # Big one-sided flushes within 5 min. $100M+ is a real squeeze, not a blip.
+  # Big one-sided flushes. With Coinglass enabled and a valid API key, the bot
+  # sums liquidations across all major exchanges (Binance + OKX + Bybit + ...).
+  # Without Coinglass the bot only sees Binance liquidations; thresholds adapt
+  # automatically below.
   liq_cascade:
     enabled: true
     window_minutes: 5
-    usd_threshold: 100_000_000  # $100M of one-sided liquidations in window
+    usd_threshold: 100_000_000              # used in Binance-only mode
+    coinglass_aggregated_threshold: 300_000_000  # used when Coinglass is on
 
   # 1h EMA trend filter — drops counter-trend signals when the larger trend is clear.
   # Liquidation cascades are exempt: a long-flush in an uptrend (or short-squeeze
@@ -124,3 +128,20 @@ notifier:
 
   # How often to poll Telegram for incoming /start commands (seconds).
   command_poll_interval_seconds: 5
+
+# ─── Cross-exchange liquidations (Coinglass) ────────────────────────────────
+# Only takes effect when COINGLASS_API_KEY is set as a Fly secret. With no key,
+# the bot silently falls back to Binance-only liquidations (same logic as before).
+coinglass:
+  enabled: true
+  interval: 1h    # 1m,5m,15m,30m,1h,4h,...; free tier typically requires >=1h
+
+# ─── Weekly stats digest ────────────────────────────────────────────────────
+# Once a week the bot reads positions.jsonl and sends a summary to Telegram:
+# total signals, win-rate by signal type, average PnL, etc.
+stats:
+  enabled: true
+  weekday: 0       # 0=Mon, 1=Tue, ..., 6=Sun
+  hour_utc: 12     # send at 12:00 UTC every Monday
+  window_days: 7   # rolling window of positions to summarize
+
