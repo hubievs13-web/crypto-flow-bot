@@ -1,4 +1,4 @@
-"""Telegram notifier — async sender + alert formatters."""
+"""Telegram notifier — async sender + alert formatters + /start command handler."""
 
 from __future__ import annotations
 
@@ -20,6 +20,7 @@ class TelegramNotifier:
         self.chat_ids = chat_ids
         self._http = http or httpx.AsyncClient(timeout=10.0)
         self._owns_http = http is None
+        self._update_offset: int = 0
 
     async def aclose(self) -> None:
         if self._owns_http:
@@ -40,6 +41,68 @@ class TelegramNotifier:
                     log.warning("telegram send to %s failed: %s %s", chat_id, r.status_code, r.text)
             except (TimeoutError, httpx.HTTPError) as e:
                 log.warning("telegram send to %s errored: %s", chat_id, e)
+
+    async def send_to(self, chat_id: str, text: str) -> None:
+        """Send a message to a specific chat (used for /start replies)."""
+        url = f"https://api.telegram.org/bot{self.token}/sendMessage"
+        payload = {
+            "chat_id": chat_id,
+            "text": text,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True,
+        }
+        try:
+            r = await self._http.post(url, json=payload)
+            if r.status_code != 200:
+                log.warning("telegram send_to %s failed: %s %s", chat_id, r.status_code, r.text)
+        except (TimeoutError, httpx.HTTPError) as e:
+            log.warning("telegram send_to %s errored: %s", chat_id, e)
+
+    async def clear_pending_updates(self) -> None:
+        """Drop any /start messages queued up before the bot started.
+
+        Without this, every restart would re-reply to old /start commands.
+        """
+        url = f"https://api.telegram.org/bot{self.token}/getUpdates"
+        try:
+            r = await self._http.get(url, params={"timeout": 0}, timeout=10.0)
+            if r.status_code != 200:
+                return
+            results = r.json().get("result", [])
+        except (TimeoutError, httpx.HTTPError) as e:
+            log.debug("clear_pending_updates errored: %s", e)
+            return
+        if results:
+            self._update_offset = results[-1]["update_id"] + 1
+            log.info("dropped %d pending Telegram updates on startup", len(results))
+
+    async def poll_commands(self, cfg: Config) -> None:
+        """Poll for incoming messages and handle /start command."""
+        url = f"https://api.telegram.org/bot{self.token}/getUpdates"
+        params: dict[str, int | str] = {"timeout": 0, "allowed_updates": "message"}
+        if self._update_offset:
+            params["offset"] = self._update_offset
+        try:
+            r = await self._http.get(url, params=params, timeout=15.0)
+            if r.status_code != 200:
+                log.debug("getUpdates returned %s", r.status_code)
+                return
+            data = r.json()
+        except (TimeoutError, httpx.HTTPError) as e:
+            log.debug("getUpdates errored: %s", e)
+            return
+
+        for update in data.get("result", []):
+            self._update_offset = update["update_id"] + 1
+            message = update.get("message")
+            if not message:
+                continue
+            text = (message.get("text") or "").strip()
+            chat_id = str(message["chat"]["id"])
+            if text == "/start":
+                log.info("received /start from chat %s", chat_id)
+                greeting = format_greeting(cfg)
+                await self.send_to(chat_id, greeting)
 
 
 def _pretty(symbol: str, cfg: Config) -> str:
@@ -159,3 +222,25 @@ def format_startup(cfg: Config, version: str) -> Alert:
         f"time stop {cfg.exits.time_stop_minutes}min"
     )
     return Alert(kind="STARTUP", symbol="*", ts=utcnow(), text=text)
+
+
+def format_greeting(cfg: Config) -> str:
+    """Welcome message shown when a user sends /start to the bot."""
+    pretty = ", ".join(cfg.notifier.pretty_names.get(s, s) for s in cfg.symbols)
+    return (
+        "👋 <b>Welcome to crypto-flow-bot!</b>\n\n"
+        "I watch Binance USD-M futures flow data and send you trade signals "
+        "with full SL / TP / trailing / time-stop / reason-invalidation exits.\n\n"
+        f"<b>Currently watching:</b> {pretty}\n\n"
+        "<b>What you'll receive:</b>\n"
+        "  🟢 LONG / 🔴 SHORT entry signals (with SL + TP ladder)\n"
+        "  🟡 TP hits — partial profit-take\n"
+        "  🔴 SL hits — close all\n"
+        "  🟦 Trailing moves — SL tightens after a favorable move\n"
+        "  ⏰ Time stops — close after the configured timeout\n"
+        "  ❎ Reason invalidated — close at break-even\n\n"
+        "<b>Important:</b> the bot does NOT execute trades. It only suggests "
+        "entries and exits — you place the orders yourself on the exchange.\n\n"
+        "<i>Signals are statistical heuristics, not guaranteed wins. "
+        "Backtest and paper-trade before risking real capital.</i>"
+    )

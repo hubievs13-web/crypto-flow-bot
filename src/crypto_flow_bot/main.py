@@ -79,6 +79,7 @@ class Bot:
                 self._poll_loop(),
                 self._exit_loop(),
                 self._heartbeat_loop(),
+                self._commands_loop(),
             )
         finally:
             await self.liq_stream.stop()
@@ -130,6 +131,14 @@ class Bot:
                 hb = format_heartbeat(len(self.state.open_positions()), self.cfg.symbols)
                 await self.notifier.send(hb.text)
                 await self.logger.write_alert(hb)
+
+    async def _commands_loop(self) -> None:
+        while not self._stop.is_set():
+            try:
+                await self.notifier.poll_commands(self.cfg)
+            except Exception as e:  # never let this loop crash the bot
+                log.warning("command polling errored: %s", e)
+            await self._sleep(self.cfg.notifier.command_poll_interval_seconds)
 
     # ---------- entry / exit handling ----------
 
@@ -203,6 +212,8 @@ async def amain() -> None:
         "crypto-flow-bot started; watching %s every %ds",
         ", ".join(cfg.symbols), cfg.poll_interval_seconds,
     )
+    # Drop any /start messages queued up before this run so we don't double-reply.
+    await notifier.clear_pending_updates()
     if cfg.notifier.send_startup_message:
         startup = format_startup(cfg, __version__)
         try:
