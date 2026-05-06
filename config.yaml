@@ -35,16 +35,15 @@ signals:
     long_overheated_above: 0.0010    # 0.10% / 8h -> short signal (longs paying a lot)
     short_overheated_below: -0.0008  # -0.08% / 8h -> long signal (shorts paying)
 
-  # Open Interest surge.
-  # NOTE: the current engine cannot align OI direction with price direction (it
-  # would need a separate price-change series). So even though OI surges are real,
-  # they're noisy without that confirmation. We disable this rule by default.
-  # Re-enable at your own risk, with require_price_aligned: false.
+  # Open Interest surge — now uses 1h price-change to identify *direction* of new flow:
+  #   OI ↑ + price ↑ -> fresh longs (LONG signal)
+  #   OI ↑ + price ↓ -> fresh shorts (SHORT signal)
+  # OI ↓ scenarios are skipped (those are exits/squeezes, not entries).
   oi_surge:
-    enabled: false
-    window_minutes: 120
-    pct_change_threshold: 0.08  # 8% growth in window
-    require_price_aligned: true
+    enabled: true
+    window_minutes: 60
+    pct_change_threshold: 0.05      # 5% OI growth in window
+    require_price_aligned: true     # require simultaneous price move in same direction
 
   # Top traders long/short *position* ratio (Binance topLongShortPositionRatio, 5m).
   # Typical neutral band: 0.8 – 1.5. We only fire on serious crowding.
@@ -60,18 +59,35 @@ signals:
     window_minutes: 5
     usd_threshold: 100_000_000  # $100M of one-sided liquidations in window
 
+  # 1h EMA trend filter — drops counter-trend signals when the larger trend is clear.
+  # Liquidation cascades are exempt: a long-flush in an uptrend (or short-squeeze
+  # in a downtrend) is the highest-EV setup, so we don't filter those out.
+  trend_filter:
+    enabled: true
+    ema_period: 50
+    require_alignment: true
+
 # ─── Exit rules (applied to the "virtual" position the bot tracks) ──────────
 # The bot does NOT execute orders. It only TELLS you to exit, in three ways.
 
 exits:
-  # Hard stop-loss as % from entry. Closes the whole virtual position.
-  stop_loss_pct: 0.015  # 1.5%
+  # Volatility-adaptive SL/TP using 1h ATR(14).
+  # When enabled and ATR is available, the bot sizes the stop and take-profit
+  # ladders by ATR multiples instead of fixed percentages — so SL/TP scale
+  # naturally with each symbol's current volatility (BTC tighter on quiet days,
+  # SOL wider during chop). Falls back to the % values below when ATR isn't ready.
+  atr_sizing:
+    enabled: true
+    sl_atr_mult: 1.5            # SL distance = 1.5 × ATR
+    tp_atr_mults: [1.5, 3.0]    # TP1 / TP2 distances as ATR multiples
+    fallback_to_pct: true
 
-  # Take-profit ladder. Each level closes the configured fraction.
-  # 1:1 R:R at TP1, 1:2 at TP2 — solid baseline.
+  # Fallback fixed SL/TP — used only when ATR isn't available (rare; only if
+  # Binance klines fail to load on first poll).
+  stop_loss_pct: 0.015  # 1.5%
   take_profit_levels:
-    - { pct: 0.015, fraction: 0.5 }  # +1.5% — fix half
-    - { pct: 0.030, fraction: 0.5 }  # +3.0% — fix the rest
+    - { pct: 0.015, fraction: 0.5 }
+    - { pct: 0.030, fraction: 0.5 }
 
   # Trailing stop: once price has moved this far in your favor, lock in
   # `lock_in_pct` of profit (move stop to entry + lock_in_pct).

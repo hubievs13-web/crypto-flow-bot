@@ -55,20 +55,37 @@ def evaluate(snap: Snapshot, cfg: Config) -> list[SignalCandidate]:
         and abs(snap.open_interest_change_pct_window) >= sig.oi_surge.pct_change_threshold
     ):
         oi_pct = snap.open_interest_change_pct_window
-        # We don't have a separate price-change window — use OI-direction as the
-        # primary tell. If require_price_aligned is False, fire purely on OI;
-        # otherwise we use OI direction itself (positive = fresh longs, negative
-        # = fresh shorts) — this captures "fresh flow" without needing a
-        # second price-change series.
-        if oi_pct > 0:
-            # Fresh longs entering: this is *trend confirmation*, not a contrarian signal.
-            # Without price-change confirmation we treat it as a mild long bias.
-            if not sig.oi_surge.require_price_aligned:
+        # OI direction alone is ambiguous (longs and shorts both grow OI).
+        # When require_price_aligned is True (default) we cross-check with the
+        # 1h price-change to identify *which* side opened the new positions:
+        #   OI ↑ + price ↑ -> fresh longs  -> LONG
+        #   OI ↑ + price ↓ -> fresh shorts -> SHORT
+        #   OI ↓ + price ↑ -> short squeeze (skip — already in motion)
+        #   OI ↓ + price ↓ -> long capitulation (skip — too late)
+        # Without alignment requirement we fall back to OI sign alone (noisy).
+        if sig.oi_surge.require_price_aligned:
+            price_pct = snap.price_change_pct_1h
+            if price_pct is not None and oi_pct > 0:
+                if price_pct > 0:
+                    long_rules.append(
+                        FiredRule(
+                            name="oi_surge",
+                            description=f"OI +{oi_pct * 100:.1f}% + price {price_pct * 100:+.2f}% / 1h (fresh longs)",
+                        )
+                    )
+                elif price_pct < 0:
+                    short_rules.append(
+                        FiredRule(
+                            name="oi_surge",
+                            description=f"OI +{oi_pct * 100:.1f}% + price {price_pct * 100:+.2f}% / 1h (fresh shorts)",
+                        )
+                    )
+        else:
+            if oi_pct > 0:
                 long_rules.append(
                     FiredRule(name="oi_surge", description=f"OI +{oi_pct * 100:.1f}% / window (fresh longs)")
                 )
-        else:
-            if not sig.oi_surge.require_price_aligned:
+            else:
                 short_rules.append(
                     FiredRule(name="oi_surge", description=f"OI {oi_pct * 100:.1f}% / window (fresh shorts)")
                 )
@@ -101,6 +118,16 @@ def evaluate(snap: Snapshot, cfg: Config) -> list[SignalCandidate]:
                     description=f"short liqs ${snap.short_liquidations_usd_window / 1e6:.1f}M (squeeze)",
                 )
             )
+
+    # 1h EMA trend filter: drop counter-trend signals when the larger trend is clear.
+    # Liquidation cascades against the trend often *are* the highest-EV setups
+    # (long flush in uptrend, short squeeze in downtrend), so we exempt them.
+    tf = sig.trend_filter
+    if tf.enabled and tf.require_alignment and snap.ema50_1h is not None:
+        if snap.price > snap.ema50_1h:
+            short_rules = [r for r in short_rules if r.name == "liq_cascade"]
+        elif snap.price < snap.ema50_1h:
+            long_rules = [r for r in long_rules if r.name == "liq_cascade"]
 
     out: list[SignalCandidate] = []
     if long_rules:

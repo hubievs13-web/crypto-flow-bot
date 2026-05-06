@@ -44,6 +44,11 @@ class Snapshot:
     long_liquidations_usd_window: float = 0.0
     short_liquidations_usd_window: float = 0.0
 
+    # 1h kline derivatives — used for OI alignment, trend filtering, and ATR sizing.
+    price_change_pct_1h: float | None = None  # last fully-closed 1h bar vs the one before
+    ema50_1h: float | None = None             # EMA(50) on 1h closes
+    atr_1h: float | None = None               # ATR(14) on 1h bars, in absolute price units
+
     def to_log_dict(self) -> dict:
         d = asdict(self)
         d["ts"] = self.ts.isoformat()

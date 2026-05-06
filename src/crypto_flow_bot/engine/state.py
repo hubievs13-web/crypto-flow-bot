@@ -118,8 +118,27 @@ class StateStore:
     def open_from_signal(self, candidate: SignalCandidate, cfg: Config) -> Position:
         snap: Snapshot = candidate.snapshot
         sign = candidate.direction.sign
-        sl_price = snap.price * (1 - sign * cfg.exits.stop_loss_pct)
-        tp_levels = [TpLevelState(pct=lvl.pct, fraction=lvl.fraction) for lvl in cfg.exits.take_profit_levels]
+
+        # ATR-based dynamic SL/TP when ATR is available; fall back to fixed % otherwise.
+        atr_cfg = cfg.exits.atr_sizing
+        use_atr = atr_cfg.enabled and snap.atr_1h is not None and snap.atr_1h > 0 and snap.price > 0
+        if use_atr:
+            atr = snap.atr_1h
+            assert atr is not None
+            sl_dist_pct = (atr_cfg.sl_atr_mult * atr) / snap.price
+            sl_price = snap.price * (1 - sign * sl_dist_pct)
+            existing_fractions = [lvl.fraction for lvl in cfg.exits.take_profit_levels]
+            mults = atr_cfg.tp_atr_mults
+            # Pad/truncate the multiplier list to match the number of TP levels.
+            if len(mults) < len(existing_fractions):
+                mults = list(mults) + [mults[-1]] * (len(existing_fractions) - len(mults))
+            tp_levels = [
+                TpLevelState(pct=(m * atr) / snap.price, fraction=frac)
+                for m, frac in zip(mults, existing_fractions, strict=False)
+            ]
+        else:
+            sl_price = snap.price * (1 - sign * cfg.exits.stop_loss_pct)
+            tp_levels = [TpLevelState(pct=lvl.pct, fraction=lvl.fraction) for lvl in cfg.exits.take_profit_levels]
         metric_snap: dict = {}
         if snap.funding_rate is not None:
             metric_snap["funding_rate"] = snap.funding_rate

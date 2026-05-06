@@ -34,11 +34,20 @@ class LiqCascadeCfg(BaseModel):
     usd_threshold: float = 50_000_000
 
 
+class TrendFilterCfg(BaseModel):
+    """1h EMA-based trend filter. Blocks signals against the larger trend."""
+
+    enabled: bool = True
+    ema_period: int = 50         # EMA on 1h closes (we always pull 50 bars)
+    require_alignment: bool = True  # if true, drop SHORT signals above EMA / LONG signals below
+
+
 class SignalsCfg(BaseModel):
     funding_extreme: FundingExtremeCfg = Field(default_factory=FundingExtremeCfg)
     oi_surge: OiSurgeCfg = Field(default_factory=OiSurgeCfg)
     lsr_extreme: LsrExtremeCfg = Field(default_factory=LsrExtremeCfg)
     liq_cascade: LiqCascadeCfg = Field(default_factory=LiqCascadeCfg)
+    trend_filter: TrendFilterCfg = Field(default_factory=TrendFilterCfg)
 
 
 class TpLevel(BaseModel):
@@ -58,6 +67,22 @@ class ReasonInvalidationCfg(BaseModel):
     lsr_normalized_band: tuple[float, float] = (0.85, 1.15)
 
 
+class AtrSizingCfg(BaseModel):
+    """Volatility-adaptive SL/TP sizing using 1h ATR.
+
+    When enabled and ATR is available, SL/TP are placed N×ATR from entry instead
+    of using the fixed `stop_loss_pct` / `take_profit_levels` percentages. This
+    auto-adapts to each symbol's current volatility.
+    """
+
+    enabled: bool = True
+    sl_atr_mult: float = 1.5             # SL distance = N × ATR(14, 1h)
+    tp_atr_mults: list[float] = Field(
+        default_factory=lambda: [1.5, 3.0]  # TP1, TP2 distances as ATR multiples
+    )
+    fallback_to_pct: bool = True         # if ATR not available, use the % values below
+
+
 class ExitsCfg(BaseModel):
     stop_loss_pct: float = 0.015
     take_profit_levels: list[TpLevel] = Field(
@@ -66,6 +91,7 @@ class ExitsCfg(BaseModel):
     trailing: TrailingCfg = Field(default_factory=TrailingCfg)
     time_stop_minutes: int = 240
     reason_invalidation: ReasonInvalidationCfg = Field(default_factory=ReasonInvalidationCfg)
+    atr_sizing: AtrSizingCfg = Field(default_factory=AtrSizingCfg)
 
     @field_validator("take_profit_levels")
     @classmethod
