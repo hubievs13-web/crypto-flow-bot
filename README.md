@@ -140,7 +140,7 @@ To override only some fields, copy `config.yaml` to `config.local.yaml`, edit, a
 ## Limits & honest disclaimers
 
 - These signals are **statistical heuristics**, not a holy grail. Funding/OI/LSR extremes give a *bias*, not certainty. Backtest before risking real capital.
-- The Binance liquidation websocket only reports liquidations on **Binance USD-M Futures**. Liquidations on other venues (OKX, Bybit, etc.) aren't captured. For a fuller picture you'd add Coinglass aggregation.
+- The bot aggregates **multi-exchange liquidations** by subscribing to each exchange's public WebSocket directly (Binance + Bybit by default; configurable in `liquidations.exchanges`). Public streams only — no API keys, no rate limits, no paid services.
 - Connectivity matters. Run the bot on a stable VPS / Fly.io — laptop sleep means missed signals.
 - Telegram has rate limits (~30 messages/sec to a group). The default thresholds are tuned to keep alert frequency low.
 

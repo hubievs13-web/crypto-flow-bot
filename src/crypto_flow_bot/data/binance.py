@@ -1,37 +1,25 @@
-"""Binance USD-M futures public data — funding, OI, LSR, price, and liquidations.
+"""Binance USD-M futures public data — funding, OI, LSR, price.
 
-All endpoints used here are public (no API key required).
+All endpoints used here are public (no API key required). The liquidation
+stream lives in `crypto_flow_bot.data.liquidations` and aggregates across
+multiple exchanges.
 """
 
 from __future__ import annotations
 
 import asyncio
-import contextlib
-import json
 import logging
-from collections import deque
-from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 import httpx
-import websockets
 from tenacity import AsyncRetrying, retry_if_exception_type, stop_after_attempt, wait_exponential
 
-from crypto_flow_bot.data.coinglass import CoinglassClient, base_coin_from_symbol
+from crypto_flow_bot.data.liquidations import LiquidationStream
 from crypto_flow_bot.engine.models import Snapshot
 
 log = logging.getLogger(__name__)
 
 REST_BASE = "https://fapi.binance.com"
-WS_URL = "wss://fstream.binance.com/ws/!forceOrder@arr"
-
-
-@dataclass
-class _LiquidationEvent:
-    symbol: str
-    side: str  # "BUY" = a short was liquidated; "SELL" = a long was liquidated.
-    notional_usd: float
-    ts: datetime
 
 
 class BinanceClient:
@@ -150,118 +138,25 @@ def compute_atr(highs: list[float], lows: list[float], closes: list[float], peri
     return sum(trs[-period:]) / period
 
 
-class LiquidationStream:
-    """Subscribes to Binance's all-symbol liquidation websocket and keeps a rolling window."""
-
-    def __init__(self, window_minutes: int) -> None:
-        self.window = timedelta(minutes=window_minutes)
-        self._events: deque[_LiquidationEvent] = deque()
-        self._task: asyncio.Task | None = None
-        self._stopped = asyncio.Event()
-
-    def start(self) -> None:
-        if self._task is None or self._task.done():
-            self._task = asyncio.create_task(self._run(), name="liq-stream")
-
-    async def stop(self) -> None:
-        self._stopped.set()
-        if self._task:
-            self._task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._task
-            self._task = None
-
-    def totals(self, symbol: str) -> tuple[float, float]:
-        """Return (long_liquidations_usd, short_liquidations_usd) within the window."""
-        self._evict_old()
-        long_liq = 0.0
-        short_liq = 0.0
-        for ev in self._events:
-            if ev.symbol != symbol:
-                continue
-            # Binance: side == SELL means a long was force-closed (sold to liquidate).
-            # side == BUY means a short was force-closed.
-            if ev.side == "SELL":
-                long_liq += ev.notional_usd
-            elif ev.side == "BUY":
-                short_liq += ev.notional_usd
-        return long_liq, short_liq
-
-    def _evict_old(self) -> None:
-        cutoff = datetime.now(tz=UTC) - self.window
-        while self._events and self._events[0].ts < cutoff:
-            self._events.popleft()
-
-    async def _run(self) -> None:
-        backoff = 1.0
-        while not self._stopped.is_set():
-            try:
-                async with websockets.connect(WS_URL, ping_interval=20, ping_timeout=20) as ws:
-                    log.info("liquidation stream connected")
-                    backoff = 1.0
-                    async for raw in ws:
-                        if self._stopped.is_set():
-                            break
-                        try:
-                            msg = json.loads(raw)
-                        except json.JSONDecodeError:
-                            continue
-                        order = msg.get("o") or {}
-                        symbol = order.get("s")
-                        side = order.get("S")
-                        price = float(order.get("ap") or order.get("p") or 0.0)
-                        qty = float(order.get("q") or 0.0)
-                        if not symbol or not side or qty <= 0 or price <= 0:
-                            continue
-                        notional = price * qty
-                        self._events.append(
-                            _LiquidationEvent(
-                                symbol=symbol,
-                                side=side,
-                                notional_usd=notional,
-                                ts=datetime.now(tz=UTC),
-                            )
-                        )
-                        self._evict_old()
-            except (TimeoutError, websockets.WebSocketException, OSError) as e:
-                if self._stopped.is_set():
-                    break
-                log.warning("liquidation stream disconnected: %s; retrying in %.1fs", e, backoff)
-                try:
-                    await asyncio.sleep(backoff)
-                except asyncio.CancelledError:
-                    break
-                backoff = min(backoff * 2.0, 60.0)
-
-
 async def build_snapshot(
     client: BinanceClient,
     liq_stream: LiquidationStream,
     symbol: str,
     oi_window_minutes: int,
-    coinglass: CoinglassClient | None = None,
-    coinglass_interval: str = "1h",
 ) -> Snapshot:
     """Pull a fresh snapshot for a symbol.
 
-    Combines REST data and the WS-driven Binance liquidation totals. When a
-    Coinglass client is supplied, also fetches cross-exchange aggregated
-    liquidations for the most recent closed bar; on failure those fields stay
-    None and the caller falls back to Binance-only.
+    Combines REST data and the multi-exchange WS-driven liquidation totals.
+    `liq_stream.totals(symbol)` already aggregates across every enabled
+    exchange (see `crypto_flow_bot.data.liquidations.LiquidationStream`).
     """
-    coinglass_call = (
-        coinglass.aggregated_liquidations(base_coin_from_symbol(symbol), coinglass_interval)
-        if coinglass is not None
-        else _none_async()
-    )
-    funding, oi_now, lsr, price, oi_hist, klines, agg_liq = await asyncio.gather(
+    funding, oi_now, lsr, price, oi_hist, klines = await asyncio.gather(
         client.funding_rate(symbol),
         client.open_interest_usd(symbol),
         client.top_long_short_position_ratio(symbol),
         client.latest_price(symbol),
         client.open_interest_history(symbol, period="5m", limit=max(2, oi_window_minutes // 5 + 1)),
         client.klines_1h(symbol, limit=51),
-        coinglass_call,
     )
 
     oi_change_pct: float | None = None
@@ -292,10 +187,6 @@ async def build_snapshot(
             pass
 
     long_liq, short_liq = liq_stream.totals(symbol)
-    agg_long: float | None = None
-    agg_short: float | None = None
-    if agg_liq is not None:
-        agg_long, agg_short = agg_liq
     return Snapshot(
         symbol=symbol,
         ts=datetime.now(tz=UTC),
@@ -306,14 +197,7 @@ async def build_snapshot(
         long_short_ratio=lsr,
         long_liquidations_usd_window=long_liq,
         short_liquidations_usd_window=short_liq,
-        aggregated_long_liquidations_usd=agg_long,
-        aggregated_short_liquidations_usd=agg_short,
         price_change_pct_1h=price_change_pct_1h,
         ema50_1h=ema50_1h,
         atr_1h=atr_1h,
     )
-
-
-async def _none_async() -> None:
-    """Helper for `asyncio.gather` placeholder when Coinglass is not configured."""
-    return None

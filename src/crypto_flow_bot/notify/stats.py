@@ -168,3 +168,18 @@ def format_stats_digest(
         "partial TP fills or fees. Win-rate = positions that hit TP1.</i>"
     )
     return "\n".join(lines).rstrip()
+
+
+def is_past_weekly_send_time(now: datetime, weekday: int, hour_utc: int) -> bool:
+    """True iff `now` is at or after this ISO week's scheduled send moment.
+
+    `weekday` follows Python's convention (0=Mon..6=Sun); `hour_utc` is the
+    target hour. The check is "have we crossed the send-moment for the
+    current ISO week", not "are we exactly at it" — so a short outage that
+    spans the exact minute does not cause the digest to be skipped.
+    """
+    _iso_year, _iso_week, iso_weekday = now.isocalendar()  # iso_weekday: 1=Mon..7=Sun
+    target_iso_weekday = weekday + 1
+    if iso_weekday > target_iso_weekday:
+        return True
+    return iso_weekday == target_iso_weekday and now.hour >= hour_utc

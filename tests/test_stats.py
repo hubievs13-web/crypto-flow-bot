@@ -6,6 +6,7 @@ from crypto_flow_bot.notify.stats import (
     SignalStats,
     compute_stats,
     format_stats_digest,
+    is_past_weekly_send_time,
     read_latest_positions,
 )
 
@@ -144,3 +145,44 @@ def test_read_latest_positions_keeps_last_per_id(tmp_path):
 
 def test_read_latest_positions_missing_file_returns_empty(tmp_path):
     assert read_latest_positions(tmp_path / "does_not_exist.jsonl") == []
+
+
+# ─── Weekly digest gate (Mon 12:00 UTC by default) ──────────────────────────
+
+
+def test_digest_gate_fires_at_exact_send_time():
+    # 2025-11-03 (Mon) 12:00 UTC, target Mon 12:00.
+    assert is_past_weekly_send_time(
+        datetime(2025, 11, 3, 12, 0, tzinfo=UTC), weekday=0, hour_utc=12
+    )
+
+
+def test_digest_gate_fires_one_minute_after_send_time():
+    # The whole point of the fix: 12:01 still counts as "past".
+    assert is_past_weekly_send_time(
+        datetime(2025, 11, 3, 12, 1, tzinfo=UTC), weekday=0, hour_utc=12
+    )
+
+
+def test_digest_gate_fires_later_in_the_week():
+    # Tue 09:00 — already past Mon 12:00.
+    assert is_past_weekly_send_time(
+        datetime(2025, 11, 4, 9, 0, tzinfo=UTC), weekday=0, hour_utc=12
+    )
+
+
+def test_digest_gate_does_not_fire_before_send_time():
+    # Mon 11:59 — too early.
+    assert not is_past_weekly_send_time(
+        datetime(2025, 11, 3, 11, 59, tzinfo=UTC), weekday=0, hour_utc=12
+    )
+
+
+def test_digest_gate_handles_sunday_target():
+    # weekday=6 (Sun). Sat is too early; Sun 12:00 is on time.
+    assert not is_past_weekly_send_time(
+        datetime(2025, 11, 1, 23, 0, tzinfo=UTC), weekday=6, hour_utc=12
+    )
+    assert is_past_weekly_send_time(
+        datetime(2025, 11, 2, 12, 0, tzinfo=UTC), weekday=6, hour_utc=12
+    )
