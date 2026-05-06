@@ -102,20 +102,36 @@ def evaluate(snap: Snapshot, cfg: Config) -> list[SignalCandidate]:
             )
 
     if sig.liq_cascade.enabled:
-        thr = sig.liq_cascade.usd_threshold
-        if snap.long_liquidations_usd_window >= thr:
+        # Prefer cross-exchange aggregated values (Coinglass) when available;
+        # fall back to Binance-only WS counters when not. The threshold also
+        # adapts: aggregated numbers are typically 3-5x larger than Binance-only.
+        using_aggregated = (
+            snap.aggregated_long_liquidations_usd is not None
+            and snap.aggregated_short_liquidations_usd is not None
+        )
+        if using_aggregated:
+            long_liq = snap.aggregated_long_liquidations_usd or 0.0
+            short_liq = snap.aggregated_short_liquidations_usd or 0.0
+            thr = sig.liq_cascade.coinglass_aggregated_threshold
+            tag = "aggregated"
+        else:
+            long_liq = snap.long_liquidations_usd_window
+            short_liq = snap.short_liquidations_usd_window
+            thr = sig.liq_cascade.usd_threshold
+            tag = "binance"
+        if long_liq >= thr:
             # longs were flushed -> often a bounce / squeeze up
             long_rules.append(
                 FiredRule(
                     name="liq_cascade",
-                    description=f"long liqs ${snap.long_liquidations_usd_window / 1e6:.1f}M (flush)",
+                    description=f"long liqs ${long_liq / 1e6:.0f}M ({tag}, flush)",
                 )
             )
-        if snap.short_liquidations_usd_window >= thr:
+        if short_liq >= thr:
             short_rules.append(
                 FiredRule(
                     name="liq_cascade",
-                    description=f"short liqs ${snap.short_liquidations_usd_window / 1e6:.1f}M (squeeze)",
+                    description=f"short liqs ${short_liq / 1e6:.0f}M ({tag}, squeeze)",
                 )
             )
 

@@ -33,6 +33,8 @@ class StateStore:
         self.path = d / "state.json"
         self.positions: dict[str, Position] = {}
         self.last_alert_ts: dict[tuple[str, Direction], datetime] = {}
+        # ISO-week key (e.g. "2025-W18") of the last weekly stats digest sent.
+        self.last_stats_digest_week: str | None = None
         self._load()
 
     # ---------- persistence ----------
@@ -76,6 +78,7 @@ class StateStore:
                 )
             except (KeyError, ValueError):
                 continue
+        self.last_stats_digest_week = raw.get("last_stats_digest_week")
 
     def save(self) -> None:
         body = {
@@ -84,6 +87,7 @@ class StateStore:
                 {"symbol": s, "direction": d.value, "ts": ts.isoformat()}
                 for (s, d), ts in self.last_alert_ts.items()
             ],
+            "last_stats_digest_week": self.last_stats_digest_week,
         }
         tmp = self.path.with_suffix(".tmp")
         tmp.write_text(json.dumps(body, indent=2))

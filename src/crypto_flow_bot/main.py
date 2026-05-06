@@ -15,11 +15,17 @@ from dotenv import load_dotenv
 from crypto_flow_bot import __version__
 from crypto_flow_bot.config import Config, load_config
 from crypto_flow_bot.data.binance import BinanceClient, LiquidationStream, build_snapshot
+from crypto_flow_bot.data.coinglass import CoinglassClient
 from crypto_flow_bot.engine.exits import evaluate_exit
 from crypto_flow_bot.engine.models import Snapshot
 from crypto_flow_bot.engine.signals import evaluate
 from crypto_flow_bot.engine.state import StateStore
 from crypto_flow_bot.log.store import JsonlLogger
+from crypto_flow_bot.notify.stats import (
+    compute_stats,
+    format_stats_digest,
+    read_latest_positions,
+)
 from crypto_flow_bot.notify.telegram import (
     TelegramNotifier,
     format_entry_alert,
@@ -59,6 +65,7 @@ class Bot:
         notifier: TelegramNotifier,
         state: StateStore,
         logger: JsonlLogger,
+        coinglass: CoinglassClient | None = None,
     ) -> None:
         self.cfg = cfg
         self.client = client
@@ -66,6 +73,7 @@ class Bot:
         self.notifier = notifier
         self.state = state
         self.logger = logger
+        self.coinglass = coinglass
         self._stop = asyncio.Event()
         self._last_heartbeat = datetime.now(tz=UTC)
 
@@ -80,6 +88,7 @@ class Bot:
                 self._exit_loop(),
                 self._heartbeat_loop(),
                 self._commands_loop(),
+                self._stats_digest_loop(),
             )
         finally:
             await self.liq_stream.stop()
@@ -95,6 +104,8 @@ class Bot:
                         self.liq_stream,
                         symbol,
                         oi_window_minutes=self.cfg.signals.oi_surge.window_minutes,
+                        coinglass=self.coinglass if self.cfg.coinglass.enabled else None,
+                        coinglass_interval=self.cfg.coinglass.interval,
                     )
                 except Exception as e:
                     log.warning("snapshot for %s failed: %s", symbol, e)
@@ -139,6 +150,45 @@ class Bot:
             except Exception as e:  # never let this loop crash the bot
                 log.warning("command polling errored: %s", e)
             await self._sleep(self.cfg.notifier.command_poll_interval_seconds)
+
+    async def _stats_digest_loop(self) -> None:
+        """Send a weekly summary at the configured weekday/hour (UTC).
+
+        Persists the last-sent ISO week in StateStore so a restart inside the
+        send window doesn't double-fire.
+        """
+        cfg = self.cfg.stats
+        if not cfg.enabled:
+            return
+        while not self._stop.is_set():
+            await self._sleep(60)
+            now = datetime.now(tz=UTC)
+            if now.weekday() != cfg.weekday or now.hour != cfg.hour_utc:
+                continue
+            iso_year, iso_week, _ = now.isocalendar()
+            week_key = f"{iso_year}-W{iso_week:02d}"
+            if self.state.last_stats_digest_week == week_key:
+                continue
+            try:
+                positions = read_latest_positions(self.logger.positions_path)
+                stats = compute_stats(positions, now=now, window_days=cfg.window_days)
+                # Count unique positions in window for the header.
+                cutoff = now - timedelta(days=cfg.window_days)
+                total_unique = sum(
+                    1
+                    for p in positions
+                    if (entry := p.get("entry_ts"))
+                    and datetime.fromisoformat(entry) >= cutoff
+                )
+                text = format_stats_digest(
+                    stats, window_days=cfg.window_days, total_positions=total_unique
+                )
+                await self.notifier.send(text)
+            except Exception as e:
+                log.exception("stats digest failed: %s", e)
+                continue
+            self.state.last_stats_digest_week = week_key
+            self.state.save()
 
     # ---------- entry / exit handling ----------
 
@@ -199,8 +249,13 @@ async def amain() -> None:
     notifier = TelegramNotifier(token, chat_ids, http=http)
     state = StateStore()
     logger = JsonlLogger()
+    coinglass = CoinglassClient.from_env() if cfg.coinglass.enabled else None
+    if coinglass is not None:
+        log.info("Coinglass cross-exchange liquidations enabled")
+    else:
+        log.info("Coinglass not configured (no COINGLASS_API_KEY); using Binance-only liquidations")
 
-    bot = Bot(cfg, binance, liq, notifier, state, logger)
+    bot = Bot(cfg, binance, liq, notifier, state, logger, coinglass=coinglass)
 
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
@@ -226,6 +281,8 @@ async def amain() -> None:
     finally:
         await binance.aclose()
         await notifier.aclose()
+        if coinglass is not None:
+            await coinglass.aclose()
         await http.aclose()
         state.save()
         log.info("crypto-flow-bot stopped")
