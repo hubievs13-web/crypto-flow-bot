@@ -3,16 +3,11 @@
 # non-coder can change them.
 
 # Symbols to watch (Binance USD-M perpetual futures).
-# Wider list = more potential alerts. Tune to taste.
+# Keep the list short; more symbols = more alerts.
 symbols:
   - BTCUSDT
   - ETHUSDT
   - SOLUSDT
-  - BNBUSDT
-  - XRPUSDT
-  - DOGEUSDT
-  - AVAXUSDT
-  - LINKUSDT
 
 # How often to poll funding/OI/LSR/price (seconds).
 poll_interval_seconds: 60
@@ -35,28 +30,28 @@ signals:
   # 8h rate, NOT the per-bar rate. +0.01% = neutral, +0.05% = warm, +0.10% = hot.
   funding_extreme:
     enabled: true
-    long_overheated_above: 0.0005    # 0.05% / 8h -> short signal
-    short_overheated_below: -0.0003  # -0.03% / 8h -> long signal
+    long_overheated_above: 0.0008    # 0.08% / 8h -> short signal
+    short_overheated_below: -0.0005  # -0.05% / 8h -> long signal
 
   # Open Interest surge: large OI growth + price direction reveals fresh flow.
   oi_surge:
     enabled: true
-    window_minutes: 30          # measure OI change over this window
-    pct_change_threshold: 0.03  # 3% growth in window
+    window_minutes: 60          # measure OI change over this window
+    pct_change_threshold: 0.05  # 5% growth in window
     require_price_aligned: true # only fire if price moved in the same direction
 
   # Top traders long/short ratio extreme (Binance topLongShortPositionRatio).
   lsr_extreme:
     enabled: true
-    long_heavy_above: 2.0  # ratio > 2.0 -> crowded longs -> short signal
-    short_heavy_below: 0.65 # ratio < 0.65 -> crowded shorts -> long signal
+    long_heavy_above: 2.5  # ratio > 2.5 -> crowded longs -> short signal
+    short_heavy_below: 0.6 # ratio < 0.6 -> crowded shorts -> long signal
 
   # Liquidation cascade: large recent liquidations imply a flush.
   # After a flush, price often reverses (squeeze).
   liq_cascade:
     enabled: true
     window_minutes: 5
-    usd_threshold: 20_000_000  # $20M of one-sided liquidations in window
+    usd_threshold: 50_000_000  # $50M of one-sided liquidations in window
 
 # ─── Exit rules (applied to the "virtual" position the bot tracks) ──────────
 # The bot does NOT execute orders. It only TELLS you to exit, in three ways.
@@ -95,11 +90,6 @@ notifier:
     BTCUSDT: BTC
     ETHUSDT: ETH
     SOLUSDT: SOL
-    BNBUSDT: BNB
-    XRPUSDT: XRP
-    DOGEUSDT: DOGE
-    AVAXUSDT: AVAX
-    LINKUSDT: LINK
 
   # Always send a startup message so you know the bot is alive after a deploy.
   send_startup_message: true
