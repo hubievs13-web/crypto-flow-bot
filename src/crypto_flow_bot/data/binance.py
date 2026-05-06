@@ -103,6 +103,51 @@ class BinanceClient:
         assert isinstance(data, dict)
         return float(data["price"])
 
+    async def klines_1h(self, symbol: str, limit: int = 51) -> list[list]:
+        """Return the last `limit` 1h OHLCV bars for the symbol.
+
+        Each entry is the raw Binance kline array:
+            [openTime, open, high, low, close, volume, closeTime, ...]
+        With limit=51 we get 50 fully closed bars + 1 in-progress bar.
+        """
+        data = await self._get(
+            "/fapi/v1/klines",
+            {"symbol": symbol, "interval": "1h", "limit": limit},
+        )
+        assert isinstance(data, list)
+        return data
+
+
+def compute_ema(values: list[float], period: int) -> float | None:
+    """Standard EMA seeded with the SMA of the first `period` values."""
+    if len(values) < period or period <= 0:
+        return None
+    alpha = 2.0 / (period + 1.0)
+    ema = sum(values[:period]) / period
+    for v in values[period:]:
+        ema = alpha * v + (1.0 - alpha) * ema
+    return ema
+
+
+def compute_atr(highs: list[float], lows: list[float], closes: list[float], period: int = 14) -> float | None:
+    """Wilder-style ATR over the last `period` bars.
+
+    Requires at least `period + 1` bars (we need the previous close for True Range).
+    """
+    if not (len(highs) == len(lows) == len(closes)) or len(highs) < period + 1 or period <= 0:
+        return None
+    trs: list[float] = []
+    for i in range(1, len(highs)):
+        tr = max(
+            highs[i] - lows[i],
+            abs(highs[i] - closes[i - 1]),
+            abs(lows[i] - closes[i - 1]),
+        )
+        trs.append(tr)
+    if len(trs) < period:
+        return None
+    return sum(trs[-period:]) / period
+
 
 class LiquidationStream:
     """Subscribes to Binance's all-symbol liquidation websocket and keeps a rolling window."""
@@ -195,12 +240,13 @@ async def build_snapshot(
     oi_window_minutes: int,
 ) -> Snapshot:
     """Pull a fresh snapshot for a symbol, combining REST data and the WS-driven liq totals."""
-    funding, oi_now, lsr, price, oi_hist = await asyncio.gather(
+    funding, oi_now, lsr, price, oi_hist, klines = await asyncio.gather(
         client.funding_rate(symbol),
         client.open_interest_usd(symbol),
         client.top_long_short_position_ratio(symbol),
         client.latest_price(symbol),
         client.open_interest_history(symbol, period="5m", limit=max(2, oi_window_minutes // 5 + 1)),
+        client.klines_1h(symbol, limit=51),
     )
 
     oi_change_pct: float | None = None
@@ -211,6 +257,24 @@ async def build_snapshot(
                 oi_change_pct = (oi_now - oldest) / oldest
         except (KeyError, ValueError):
             oi_change_pct = None
+
+    # 1h kline derivatives: price-change for OI alignment, EMA for trend, ATR for sizing.
+    price_change_pct_1h: float | None = None
+    ema50_1h: float | None = None
+    atr_1h: float | None = None
+    if klines and len(klines) >= 2:
+        # Use only fully-closed bars; the last bar from Binance is in-progress.
+        closed = klines[:-1] if len(klines) > 1 else klines
+        try:
+            highs = [float(b[2]) for b in closed]
+            lows = [float(b[3]) for b in closed]
+            closes = [float(b[4]) for b in closed]
+            if len(closes) >= 2 and closes[-2] > 0:
+                price_change_pct_1h = (closes[-1] - closes[-2]) / closes[-2]
+            ema50_1h = compute_ema(closes, period=50)
+            atr_1h = compute_atr(highs, lows, closes, period=14)
+        except (IndexError, ValueError):
+            pass
 
     long_liq, short_liq = liq_stream.totals(symbol)
     return Snapshot(
@@ -223,4 +287,7 @@ async def build_snapshot(
         long_short_ratio=lsr,
         long_liquidations_usd_window=long_liq,
         short_liquidations_usd_window=short_liq,
+        price_change_pct_1h=price_change_pct_1h,
+        ema50_1h=ema50_1h,
+        atr_1h=atr_1h,
     )

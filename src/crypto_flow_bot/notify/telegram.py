@@ -118,12 +118,14 @@ def format_entry_alert(candidate: SignalCandidate, position: Position, cfg: Conf
         f"  TP{i + 1} ({lvl.fraction * 100:.0f}%): <code>{position.entry_price * (1 + position.direction.sign * lvl.pct):g}</code>  ({lvl.pct * 100:+.2f}%)"
         for i, lvl in enumerate(position.tp_levels)
     )
+    # SL distance derived from the actual position (so ATR-sized stops display correctly).
+    sl_pct = (position.stop_loss_price - position.entry_price) / position.entry_price * position.direction.sign
     text = (
         f"{arrow} <b>{side} {sym}</b> @ <code>{position.entry_price:g}</code>\n"
         f"<i>{position.id}</i>\n"
         f"\n<b>Why:</b>\n{rule_lines}\n"
         f"\n<b>Plan:</b>\n"
-        f"  SL: <code>{position.stop_loss_price:g}</code>  ({-cfg.exits.stop_loss_pct * 100:.2f}%)\n"
+        f"  SL: <code>{position.stop_loss_price:g}</code>  ({sl_pct * 100:+.2f}%)\n"
         f"{tp_lines}\n"
         f"  Trailing: " + (
             f"after {cfg.exits.trailing.activate_at_pct * 100:.2f}% lock {cfg.exits.trailing.lock_in_pct * 100:+.2f}%"

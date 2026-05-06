@@ -65,3 +65,68 @@ def test_two_directions_can_fire_simultaneously():
     out = evaluate(snap, _cfg())
     dirs = {c.direction for c in out}
     assert Direction.SHORT in dirs
+
+
+# ─── OI surge with price-alignment ──────────────────────────────────────────
+
+def test_oi_surge_up_with_price_up_yields_long_signal():
+    snap = _snap(open_interest_change_pct_window=0.07, price_change_pct_1h=0.012)
+    out = evaluate(snap, _cfg())
+    assert any(
+        c.direction is Direction.LONG and any(r.name == "oi_surge" for r in c.fired_rules)
+        for c in out
+    )
+
+
+def test_oi_surge_up_with_price_down_yields_short_signal():
+    snap = _snap(open_interest_change_pct_window=0.07, price_change_pct_1h=-0.012)
+    out = evaluate(snap, _cfg())
+    assert any(
+        c.direction is Direction.SHORT and any(r.name == "oi_surge" for r in c.fired_rules)
+        for c in out
+    )
+
+
+def test_oi_surge_without_price_data_does_not_fire():
+    # require_price_aligned=True (default) + missing price-change -> skip OI signal entirely.
+    snap = _snap(open_interest_change_pct_window=0.07, price_change_pct_1h=None)
+    out = evaluate(snap, _cfg())
+    assert all(not any(r.name == "oi_surge" for r in c.fired_rules) for c in out)
+
+
+def test_oi_decrease_does_not_fire_long_signal():
+    # OI down + price up = short squeeze, already in motion. Skip.
+    snap = _snap(open_interest_change_pct_window=-0.07, price_change_pct_1h=0.012)
+    out = evaluate(snap, _cfg())
+    assert all(not any(r.name == "oi_surge" for r in c.fired_rules) for c in out)
+
+
+# ─── Trend filter ───────────────────────────────────────────────────────────
+
+def test_trend_filter_blocks_short_when_above_ema():
+    # Price above EMA = uptrend. SHORT signal from funding/LSR should be suppressed.
+    snap = _snap(price=50000.0, ema50_1h=49000.0, funding_rate=0.0015)
+    out = evaluate(snap, _cfg())
+    assert all(c.direction is not Direction.SHORT for c in out)
+
+
+def test_trend_filter_blocks_long_when_below_ema():
+    snap = _snap(price=50000.0, ema50_1h=51500.0, funding_rate=-0.0015)
+    out = evaluate(snap, _cfg())
+    assert all(c.direction is not Direction.LONG for c in out)
+
+
+def test_trend_filter_exempts_liq_cascade():
+    # Long liquidations in an uptrend -> bounce-up setup -> LONG should still fire.
+    snap = _snap(price=50000.0, ema50_1h=49000.0, long_liquidations_usd_window=80_000_000.0)
+    out = evaluate(snap, _cfg())
+    longs = [c for c in out if c.direction is Direction.LONG]
+    assert longs and any(r.name == "liq_cascade" for r in longs[0].fired_rules)
+
+
+def test_trend_filter_passes_aligned_signal():
+    # Funding-driven LONG below EMA (downtrend) is contra-trend -> blocked.
+    # Funding-driven LONG above EMA (uptrend) is trend-aligned -> passes through.
+    snap = _snap(price=50000.0, ema50_1h=49000.0, funding_rate=-0.0015)
+    out = evaluate(snap, _cfg())
+    assert any(c.direction is Direction.LONG for c in out)
