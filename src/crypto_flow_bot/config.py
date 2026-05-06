@@ -81,6 +81,8 @@ class NotifierCfg(BaseModel):
     send_startup_message: bool = True
     silent_when_idle: bool = True
     heartbeat_minutes: int = 60
+    # How often to poll Telegram getUpdates for incoming /start commands.
+    command_poll_interval_seconds: int = 5
 
 
 class Config(BaseModel):

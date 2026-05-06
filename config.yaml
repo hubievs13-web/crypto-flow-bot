@@ -1,9 +1,10 @@
-# crypto-flow-bot — default thresholds.
-# Tune these as you observe alert quality. Each block has a short comment so a
-# non-coder can change them.
+# crypto-flow-bot — high-conviction thresholds.
+#
+# Goal of this config: fewer signals, but each one is meant to be tradable.
+# Expect 0–3 entry alerts per day in calm markets, more during a real squeeze.
+# If you want more frequent alerts, loosen the numbers in the "signals" block.
 
 # Symbols to watch (Binance USD-M perpetual futures).
-# Keep the list short; more symbols = more alerts.
 symbols:
   - BTCUSDT
   - ETHUSDT
@@ -16,8 +17,8 @@ poll_interval_seconds: 60
 exit_check_interval_seconds: 5
 
 # Minimum gap between two entry alerts on the same symbol+direction (seconds).
-# Prevents spam when a metric oscillates around a threshold.
-alert_cooldown_seconds: 1800  # 30 min
+# 2h cooldown stops the bot from re-firing while a metric oscillates around a threshold.
+alert_cooldown_seconds: 7200  # 2h
 
 # ─── Entry signals ──────────────────────────────────────────────────────────
 # A "signal" fires when its rule says so AND no other signal has fired for the
@@ -26,32 +27,38 @@ alert_cooldown_seconds: 1800  # 30 min
 
 signals:
   # Funding rate extreme.
-  # Binance funding is paid every 8h. Per-bar values you see in the API are the
-  # 8h rate, NOT the per-bar rate. +0.01% = neutral, +0.05% = warm, +0.10% = hot.
+  # Binance funding is paid every 8h. +0.05% = warm, +0.10% = hot, +0.15% = extreme.
+  # We only fire when funding is genuinely lopsided — that's the highest-conviction
+  # mean-reversion setup of this set.
   funding_extreme:
     enabled: true
-    long_overheated_above: 0.0008    # 0.08% / 8h -> short signal
-    short_overheated_below: -0.0005  # -0.05% / 8h -> long signal
+    long_overheated_above: 0.0010    # 0.10% / 8h -> short signal (longs paying a lot)
+    short_overheated_below: -0.0008  # -0.08% / 8h -> long signal (shorts paying)
 
-  # Open Interest surge: large OI growth + price direction reveals fresh flow.
+  # Open Interest surge.
+  # NOTE: the current engine cannot align OI direction with price direction (it
+  # would need a separate price-change series). So even though OI surges are real,
+  # they're noisy without that confirmation. We disable this rule by default.
+  # Re-enable at your own risk, with require_price_aligned: false.
   oi_surge:
-    enabled: true
-    window_minutes: 60          # measure OI change over this window
-    pct_change_threshold: 0.05  # 5% growth in window
-    require_price_aligned: true # only fire if price moved in the same direction
+    enabled: false
+    window_minutes: 120
+    pct_change_threshold: 0.08  # 8% growth in window
+    require_price_aligned: true
 
-  # Top traders long/short ratio extreme (Binance topLongShortPositionRatio).
+  # Top traders long/short *position* ratio (Binance topLongShortPositionRatio, 5m).
+  # Typical neutral band: 0.8 – 1.5. We only fire on serious crowding.
   lsr_extreme:
     enabled: true
-    long_heavy_above: 2.5  # ratio > 2.5 -> crowded longs -> short signal
-    short_heavy_below: 0.6 # ratio < 0.6 -> crowded shorts -> long signal
+    long_heavy_above: 3.0   # ratio > 3.0 -> very crowded longs -> short signal
+    short_heavy_below: 0.5  # ratio < 0.5 -> very crowded shorts -> long signal
 
-  # Liquidation cascade: large recent liquidations imply a flush.
-  # After a flush, price often reverses (squeeze).
+  # Liquidation cascade.
+  # Big one-sided flushes within 5 min. $100M+ is a real squeeze, not a blip.
   liq_cascade:
     enabled: true
     window_minutes: 5
-    usd_threshold: 50_000_000  # $50M of one-sided liquidations in window
+    usd_threshold: 100_000_000  # $100M of one-sided liquidations in window
 
 # ─── Exit rules (applied to the "virtual" position the bot tracks) ──────────
 # The bot does NOT execute orders. It only TELLS you to exit, in three ways.
@@ -61,17 +68,17 @@ exits:
   stop_loss_pct: 0.015  # 1.5%
 
   # Take-profit ladder. Each level closes the configured fraction.
-  # Fractions must sum to <= 1.0; the rest is left open until SL or other rule.
+  # 1:1 R:R at TP1, 1:2 at TP2 — solid baseline.
   take_profit_levels:
-    - { pct: 0.015, fraction: 0.5 }
-    - { pct: 0.030, fraction: 0.5 }
+    - { pct: 0.015, fraction: 0.5 }  # +1.5% — fix half
+    - { pct: 0.030, fraction: 0.5 }  # +3.0% — fix the rest
 
   # Trailing stop: once price has moved this far in your favor, lock in
   # `lock_in_pct` of profit (move stop to entry + lock_in_pct).
   trailing:
     enabled: true
     activate_at_pct: 0.015 # start trailing after +1.5%
-    lock_in_pct: 0.0       # 0.0 = move SL to break-even
+    lock_in_pct: 0.0       # 0.0 = move SL to break-even (you can't lose after TP1)
 
   # Time stop: close the position after this long if no other exit fired.
   time_stop_minutes: 240   # 4 hours
@@ -80,7 +87,7 @@ exits:
   # the entry has normalized.
   reason_invalidation:
     enabled: true
-    funding_normalized_below_abs: 0.0002  # close shorts when |funding| < 0.02%
+    funding_normalized_below_abs: 0.0002  # close funding-driven trades when |funding| < 0.02%
     lsr_normalized_band: [0.85, 1.15]      # close LSR-driven trades when ratio is back here
 
 # ─── Notifier formatting ────────────────────────────────────────────────────
@@ -91,10 +98,13 @@ notifier:
     ETHUSDT: ETH
     SOLUSDT: SOL
 
-  # Always send a startup message so you know the bot is alive after a deploy.
+  # Send a startup message on boot listing watched symbols + thresholds.
   send_startup_message: true
 
   # If true, every poll cycle that produces no signal is silent. If false, a
   # heartbeat is sent every `heartbeat_minutes`.
   silent_when_idle: true
   heartbeat_minutes: 60
+
+  # How often to poll Telegram for incoming /start commands (seconds).
+  command_poll_interval_seconds: 5
