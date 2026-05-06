@@ -31,22 +31,21 @@ class LsrExtremeCfg(BaseModel):
 class LiqCascadeCfg(BaseModel):
     enabled: bool = True
     window_minutes: int = 5
-    # Threshold used when only Binance WS liquidation stream is available.
+    # Threshold for the rolling-window aggregated liquidation USD across
+    # every enabled exchange. config.yaml typically overrides this; the
+    # in-code default is a Binance-only baseline that keeps tests simple.
     usd_threshold: float = 50_000_000
-    # Threshold used when Coinglass cross-exchange aggregated data is available.
-    # Aggregated numbers are typically 3-5x larger than Binance-only.
-    coinglass_aggregated_threshold: float = 300_000_000
 
 
-class CoinglassCfg(BaseModel):
-    """Cross-exchange aggregated liquidation data.
+class LiquidationsCfg(BaseModel):
+    """Multi-exchange liquidation aggregator.
 
-    Only takes effect when `COINGLASS_API_KEY` is set in the environment. With
-    no key, the bot silently falls back to Binance-only WS liquidations.
+    Public WebSockets only — no API keys, no rate limits. Each exchange
+    runs in its own task and reconnects independently with backoff, so a
+    single exchange outage does not affect the others.
     """
 
-    enabled: bool = True
-    interval: str = "1h"  # 1m,5m,15m,30m,1h,4h,...; free tier may require >=1h
+    exchanges: list[str] = Field(default_factory=lambda: ["binance", "bybit"])
 
 
 class TrendFilterCfg(BaseModel):
@@ -144,7 +143,7 @@ class Config(BaseModel):
     signals: SignalsCfg = Field(default_factory=SignalsCfg)
     exits: ExitsCfg = Field(default_factory=ExitsCfg)
     notifier: NotifierCfg = Field(default_factory=NotifierCfg)
-    coinglass: CoinglassCfg = Field(default_factory=CoinglassCfg)
+    liquidations: LiquidationsCfg = Field(default_factory=LiquidationsCfg)
     stats: StatsCfg = Field(default_factory=StatsCfg)
 
 

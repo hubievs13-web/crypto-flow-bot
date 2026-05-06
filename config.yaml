@@ -53,15 +53,14 @@ signals:
     short_heavy_below: 0.5  # ratio < 0.5 -> very crowded shorts -> long signal
 
   # Liquidation cascade.
-  # Big one-sided flushes. With Coinglass enabled and a valid API key, the bot
-  # sums liquidations across all major exchanges (Binance + OKX + Bybit + ...).
-  # Without Coinglass the bot only sees Binance liquidations; thresholds adapt
-  # automatically below.
+  # Big one-sided flushes. The bot subscribes to public liquidation WebSockets
+  # from every exchange listed in `liquidations.exchanges` below and sums them
+  # into one rolling window. With Binance + Bybit on, real squeeze events on
+  # majors typically print $150M+; 100M is a sensible floor.
   liq_cascade:
     enabled: true
     window_minutes: 5
-    usd_threshold: 100_000_000              # used in Binance-only mode
-    coinglass_aggregated_threshold: 300_000_000  # used when Coinglass is on
+    usd_threshold: 100_000_000
 
   # 1h EMA trend filter — drops counter-trend signals when the larger trend is clear.
   # Liquidation cascades are exempt: a long-flush in an uptrend (or short-squeeze
@@ -129,12 +128,14 @@ notifier:
   # How often to poll Telegram for incoming /start commands (seconds).
   command_poll_interval_seconds: 5
 
-# ─── Cross-exchange liquidations (Coinglass) ────────────────────────────────
-# Only takes effect when COINGLASS_API_KEY is set as a Fly secret. With no key,
-# the bot silently falls back to Binance-only liquidations (same logic as before).
-coinglass:
-  enabled: true
-  interval: 1h    # 1m,5m,15m,30m,1h,4h,...; free tier typically requires >=1h
+# ─── Cross-exchange liquidation aggregator ──────────────────────────────────
+# Public WebSocket streams only — no API keys, no rate limits. Each exchange
+# runs in its own task and reconnects independently with backoff, so a single
+# exchange outage does not affect the others. Add/remove names freely.
+liquidations:
+  exchanges:
+    - binance   # wss://fstream.binance.com/ws/!forceOrder@arr
+    - bybit     # wss://stream.bybit.com/v5/public/linear (allLiquidation.{symbol})
 
 # ─── Weekly stats digest ────────────────────────────────────────────────────
 # Once a week the bot reads positions.jsonl and sends a summary to Telegram:

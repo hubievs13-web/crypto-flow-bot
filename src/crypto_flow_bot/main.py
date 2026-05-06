@@ -14,8 +14,8 @@ from dotenv import load_dotenv
 
 from crypto_flow_bot import __version__
 from crypto_flow_bot.config import Config, load_config
-from crypto_flow_bot.data.binance import BinanceClient, LiquidationStream, build_snapshot
-from crypto_flow_bot.data.coinglass import CoinglassClient
+from crypto_flow_bot.data.binance import BinanceClient, build_snapshot
+from crypto_flow_bot.data.liquidations import LiquidationStream
 from crypto_flow_bot.engine.exits import evaluate_exit
 from crypto_flow_bot.engine.models import Snapshot
 from crypto_flow_bot.engine.signals import evaluate
@@ -24,6 +24,7 @@ from crypto_flow_bot.log.store import JsonlLogger
 from crypto_flow_bot.notify.stats import (
     compute_stats,
     format_stats_digest,
+    is_past_weekly_send_time,
     read_latest_positions,
 )
 from crypto_flow_bot.notify.telegram import (
@@ -65,7 +66,6 @@ class Bot:
         notifier: TelegramNotifier,
         state: StateStore,
         logger: JsonlLogger,
-        coinglass: CoinglassClient | None = None,
     ) -> None:
         self.cfg = cfg
         self.client = client
@@ -73,7 +73,6 @@ class Bot:
         self.notifier = notifier
         self.state = state
         self.logger = logger
-        self.coinglass = coinglass
         self._stop = asyncio.Event()
         self._last_heartbeat = datetime.now(tz=UTC)
 
@@ -104,8 +103,6 @@ class Bot:
                         self.liq_stream,
                         symbol,
                         oi_window_minutes=self.cfg.signals.oi_surge.window_minutes,
-                        coinglass=self.coinglass if self.cfg.coinglass.enabled else None,
-                        coinglass_interval=self.cfg.coinglass.interval,
                     )
                 except Exception as e:
                     log.warning("snapshot for %s failed: %s", symbol, e)
@@ -152,10 +149,14 @@ class Bot:
             await self._sleep(self.cfg.notifier.command_poll_interval_seconds)
 
     async def _stats_digest_loop(self) -> None:
-        """Send a weekly summary at the configured weekday/hour (UTC).
+        """Send a weekly summary once per ISO week, on or after the configured
+        weekday/hour (UTC).
 
-        Persists the last-sent ISO week in StateStore so a restart inside the
-        send window doesn't double-fire.
+        We fire as soon as we are past the configured "send time" of the
+        current ISO week AND we haven't sent a digest tagged with this
+        week's key yet. This means a Fly redeploy or short outage that
+        spans the exact send-minute does not cause us to miss the week
+        — the digest goes out the next minute the bot is alive.
         """
         cfg = self.cfg.stats
         if not cfg.enabled:
@@ -163,11 +164,11 @@ class Bot:
         while not self._stop.is_set():
             await self._sleep(60)
             now = datetime.now(tz=UTC)
-            if now.weekday() != cfg.weekday or now.hour != cfg.hour_utc:
-                continue
             iso_year, iso_week, _ = now.isocalendar()
             week_key = f"{iso_year}-W{iso_week:02d}"
             if self.state.last_stats_digest_week == week_key:
+                continue
+            if not is_past_weekly_send_time(now, cfg.weekday, cfg.hour_utc):
                 continue
             try:
                 positions = read_latest_positions(self.logger.positions_path)
@@ -245,17 +246,20 @@ async def amain() -> None:
 
     http = httpx.AsyncClient(timeout=10.0)
     binance = BinanceClient(http=httpx.AsyncClient(base_url="https://fapi.binance.com", timeout=10.0))
-    liq = LiquidationStream(window_minutes=cfg.signals.liq_cascade.window_minutes)
+    liq = LiquidationStream(
+        window_minutes=cfg.signals.liq_cascade.window_minutes,
+        exchanges=cfg.liquidations.exchanges,
+        symbols=cfg.symbols,
+    )
+    log.info(
+        "liquidation aggregator enabled for: %s",
+        ", ".join(liq.configured_exchanges) or "<none>",
+    )
     notifier = TelegramNotifier(token, chat_ids, http=http)
     state = StateStore()
     logger = JsonlLogger()
-    coinglass = CoinglassClient.from_env() if cfg.coinglass.enabled else None
-    if coinglass is not None:
-        log.info("Coinglass cross-exchange liquidations enabled")
-    else:
-        log.info("Coinglass not configured (no COINGLASS_API_KEY); using Binance-only liquidations")
 
-    bot = Bot(cfg, binance, liq, notifier, state, logger, coinglass=coinglass)
+    bot = Bot(cfg, binance, liq, notifier, state, logger)
 
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
@@ -281,8 +285,6 @@ async def amain() -> None:
     finally:
         await binance.aclose()
         await notifier.aclose()
-        if coinglass is not None:
-            await coinglass.aclose()
         await http.aclose()
         state.save()
         log.info("crypto-flow-bot stopped")
