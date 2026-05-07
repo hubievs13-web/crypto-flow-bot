@@ -157,3 +157,19 @@ stats:
   hour_utc: 12     # send at 12:00 UTC every Monday
   window_days: 7   # rolling window of positions to summarize
 
+
+# ─── Risk management ───────────────────────────────────────────────────────
+# Two top-level guards applied *before* opening any new position. Independent
+# of signal strength: they only enforce dispersion and bound drawdown.
+risk:
+  # Hard cap on simultaneously open virtual positions across all symbols.
+  # BTC/ETH/SOL are highly correlated, so 3 simultaneous LONGs ≈ 3× same beta.
+  max_concurrent_positions: 2
+
+  # Optional per-direction cap. If set (e.g. 1), at most that many LONGs and
+  # at most that many SHORTs may be open at the same time. null disables.
+  max_per_direction: null
+
+  # Daily loss circuit breaker: after this many SL_HIT exits in the current
+  # UTC day, refuse to open new positions until UTC midnight. null disables.
+  max_daily_losses: 3

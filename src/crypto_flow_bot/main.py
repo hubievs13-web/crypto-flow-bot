@@ -242,6 +242,30 @@ class Bot:
                     candidate.direction.value, candidate.symbol,
                 )
                 continue
+            # Risk #2 — daily-loss circuit breaker.
+            if self.state.daily_loss_cap_reached(self.cfg):
+                log.info(
+                    "skipping new %s entry for %s — daily-loss cap reached (%d SLs today)",
+                    candidate.direction.value, candidate.symbol, self.state.losses_today_count,
+                )
+                continue
+            # Risk #1 — global concurrency cap (and optional per-direction cap).
+            risk = self.cfg.risk
+            open_now = self.state.open_positions()
+            if len(open_now) >= risk.max_concurrent_positions:
+                log.info(
+                    "skipping new %s entry for %s — at max_concurrent_positions=%d",
+                    candidate.direction.value, candidate.symbol, risk.max_concurrent_positions,
+                )
+                continue
+            if risk.max_per_direction is not None:
+                same_dir = sum(1 for p in open_now if p.direction == candidate.direction)
+                if same_dir >= risk.max_per_direction:
+                    log.info(
+                        "skipping new %s entry for %s — at max_per_direction=%d",
+                        candidate.direction.value, candidate.symbol, risk.max_per_direction,
+                    )
+                    continue
             position = self.state.open_from_signal(candidate, self.cfg)
             self.state.mark_alerted(candidate.symbol, candidate.direction)
             self.state.save()
@@ -257,6 +281,8 @@ class Bot:
                 position.stop_loss_price = ev.new_stop_loss_price
         elif ev.fraction_closed > 0:
             self.state.close_position(position, price, reason=ev.kind, fraction=ev.fraction_closed)
+            # Daily-loss circuit breaker tally.
+            self.state.record_loss_if_today(ev.kind)
         alert = format_exit_alert(position, ev, price, cfg)
         await self.notifier.send(alert.text)
         await self.logger.write_alert(alert)

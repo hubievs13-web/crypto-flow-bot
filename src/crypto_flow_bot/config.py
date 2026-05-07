@@ -128,6 +128,28 @@ class ExitsCfg(BaseModel):
         return v
 
 
+class RiskCfg(BaseModel):
+    """Top-level risk-control limits applied before opening any new position.
+
+    These are independent of signal strength — they only enforce dispersion
+    and bound drawdown.
+    """
+
+    # Hard cap on simultaneously open virtual positions across all symbols.
+    # Crypto majors are highly correlated, so 3 simultaneous LONGs on
+    # BTC+ETH+SOL is effectively 3x exposure on the same beta.
+    max_concurrent_positions: int = 2
+
+    # Optional per-direction cap. If set (e.g. 1) at most that many LONGs and
+    # at most that many SHORTs may be open at the same time. None disables.
+    max_per_direction: int | None = None
+
+    # Daily loss circuit breaker: after this many SL_HIT exits in the current
+    # UTC day, refuse to open new positions until UTC midnight. Set to None
+    # to disable.
+    max_daily_losses: int | None = 3
+
+
 class NotifierCfg(BaseModel):
     pretty_names: dict[str, str] = Field(default_factory=dict)
     send_startup_message: bool = True
@@ -161,6 +183,7 @@ class Config(BaseModel):
     notifier: NotifierCfg = Field(default_factory=NotifierCfg)
     liquidations: LiquidationsCfg = Field(default_factory=LiquidationsCfg)
     stats: StatsCfg = Field(default_factory=StatsCfg)
+    risk: RiskCfg = Field(default_factory=RiskCfg)
 
 
 def load_config(path: str | os.PathLike[str] | None = None) -> Config:

@@ -56,3 +56,66 @@ def test_single_rule_position_not_strong(tmp_path):
     )
     pos = store.open_from_signal(candidate, cfg)
     assert pos.strong is False
+
+
+# ─── Risk: daily-loss circuit breaker (item #2) ─────────────────────────────
+
+from datetime import timedelta  # noqa: E402
+
+from crypto_flow_bot.config import RiskCfg  # noqa: E402
+
+
+def test_record_loss_if_today_ignores_non_sl_events(tmp_path):
+    s = StateStore(path=tmp_path)
+    s.record_loss_if_today("TP_HIT")
+    s.record_loss_if_today("TIME_STOP")
+    s.record_loss_if_today("REASON_INVALIDATED")
+    assert s.losses_today_count == 0
+
+
+def test_record_loss_if_today_counts_sl_hit(tmp_path):
+    s = StateStore(path=tmp_path)
+    s.record_loss_if_today("SL_HIT")
+    s.record_loss_if_today("SL_HIT")
+    assert s.losses_today_count == 2
+    assert s.losses_today_date is not None
+
+
+def test_loss_counter_resets_on_new_utc_day(tmp_path):
+    s = StateStore(path=tmp_path)
+    yesterday = datetime.now(tz=UTC) - timedelta(days=1)
+    s.record_loss_if_today("SL_HIT", now=yesterday)
+    s.record_loss_if_today("SL_HIT", now=yesterday)
+    assert s.losses_today_count == 2
+    # New UTC day -> first SL resets the counter to 1.
+    s.record_loss_if_today("SL_HIT", now=datetime.now(tz=UTC))
+    assert s.losses_today_count == 1
+
+
+def test_daily_loss_cap_reached(tmp_path):
+    s = StateStore(path=tmp_path)
+    cfg = Config(symbols=["BTCUSDT"], risk=RiskCfg(max_daily_losses=3))
+    assert s.daily_loss_cap_reached(cfg) is False
+    for _ in range(2):
+        s.record_loss_if_today("SL_HIT")
+    assert s.daily_loss_cap_reached(cfg) is False  # only 2 < 3
+    s.record_loss_if_today("SL_HIT")
+    assert s.daily_loss_cap_reached(cfg) is True   # 3 >= 3
+
+
+def test_daily_loss_cap_disabled_when_none(tmp_path):
+    s = StateStore(path=tmp_path)
+    cfg = Config(symbols=["BTCUSDT"], risk=RiskCfg(max_daily_losses=None))
+    for _ in range(10):
+        s.record_loss_if_today("SL_HIT")
+    assert s.daily_loss_cap_reached(cfg) is False
+
+
+def test_loss_counter_round_trips(tmp_path):
+    s = StateStore(path=tmp_path)
+    s.record_loss_if_today("SL_HIT")
+    s.record_loss_if_today("SL_HIT")
+    s.save()
+    fresh = StateStore(path=tmp_path)
+    assert fresh.losses_today_count == 2
+    assert fresh.losses_today_date == s.losses_today_date

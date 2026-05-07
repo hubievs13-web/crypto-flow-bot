@@ -37,6 +37,9 @@ class StateStore:
         self.last_stats_digest_week: str | None = None
         # ISO date (YYYY-MM-DD UTC) of the last daily-liveness ping sent.
         self.last_liveness_ping_date: str | None = None
+        # Daily SL_HIT counter (resets at UTC midnight) for the loss circuit breaker.
+        self.losses_today_date: str | None = None
+        self.losses_today_count: int = 0
         self._load()
 
     # ---------- persistence ----------
@@ -83,6 +86,8 @@ class StateStore:
                 continue
         self.last_stats_digest_week = raw.get("last_stats_digest_week")
         self.last_liveness_ping_date = raw.get("last_liveness_ping_date")
+        self.losses_today_date = raw.get("losses_today_date")
+        self.losses_today_count = int(raw.get("losses_today_count", 0))
 
     def save(self) -> None:
         body = {
@@ -93,6 +98,8 @@ class StateStore:
             ],
             "last_stats_digest_week": self.last_stats_digest_week,
             "last_liveness_ping_date": self.last_liveness_ping_date,
+            "losses_today_date": self.losses_today_date,
+            "losses_today_count": self.losses_today_count,
         }
         tmp = self.path.with_suffix(".tmp")
         tmp.write_text(json.dumps(body, indent=2))
@@ -109,6 +116,35 @@ class StateStore:
 
     def mark_alerted(self, symbol: str, direction: Direction) -> None:
         self.last_alert_ts[(symbol, direction)] = datetime.now(tz=UTC)
+
+    # ---------- daily-loss circuit breaker ----------
+
+    def _today_utc_key(self, now: datetime | None = None) -> str:
+        return (now or datetime.now(tz=UTC)).strftime("%Y-%m-%d")
+
+    def record_loss_if_today(self, kind: str, now: datetime | None = None) -> None:
+        """Increment today's SL counter when an exit is a stop-out.
+
+        Called from the exit handler. Resets the counter when a new UTC day
+        starts. Idempotent across restarts because state.json persists the
+        date+count pair.
+        """
+        if kind != "SL_HIT":
+            return
+        today = self._today_utc_key(now)
+        if self.losses_today_date != today:
+            self.losses_today_date = today
+            self.losses_today_count = 0
+        self.losses_today_count += 1
+
+    def daily_loss_cap_reached(self, cfg: Config, now: datetime | None = None) -> bool:
+        cap = cfg.risk.max_daily_losses
+        if cap is None:
+            return False
+        today = self._today_utc_key(now)
+        if self.losses_today_date != today:
+            return False
+        return self.losses_today_count >= cap
 
     # ---------- positions ----------
 
