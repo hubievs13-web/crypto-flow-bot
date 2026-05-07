@@ -176,3 +176,79 @@ def test_rules_split_across_directions_not_strong_for_either():
     out = evaluate(snap, _cfg())
     for c in out:
         assert c.is_strong is False
+
+
+# ─── Per-symbol threshold overrides ────────────────────────────────────────
+
+from crypto_flow_bot.config import (  # noqa: E402
+    FundingExtremeCfg,
+    LiqCascadeCfg,
+    LsrExtremeCfg,
+    SignalsCfg,
+    SymbolOverridesCfg,
+)
+
+
+def _cfg_with_per_symbol() -> Config:
+    """Two symbols: BTC has very tight thresholds, SOL has loose ones."""
+    return Config(
+        symbols=["BTCUSDT", "SOLUSDT"],
+        signals=SignalsCfg(
+            funding_extreme=FundingExtremeCfg(long_overheated_above=0.0010,
+                                              short_overheated_below=-0.0008),
+            per_symbol={
+                "BTCUSDT": SymbolOverridesCfg(
+                    funding_extreme=FundingExtremeCfg(long_overheated_above=0.0005,
+                                                     short_overheated_below=-0.0004),
+                    liq_cascade=LiqCascadeCfg(usd_threshold=50_000_000),
+                ),
+                "SOLUSDT": SymbolOverridesCfg(
+                    lsr_extreme=LsrExtremeCfg(long_heavy_above=2.5, short_heavy_below=0.6),
+                    liq_cascade=LiqCascadeCfg(usd_threshold=15_000_000),
+                ),
+            },
+        ),
+    )
+
+
+def test_for_symbol_returns_global_when_no_overrides():
+    cfg = _cfg()  # uses global SignalsCfg defaults, no per_symbol
+    eff = cfg.signals.for_symbol("BTCUSDT")
+    assert eff is cfg.signals  # short-circuit, same instance
+
+
+def test_for_symbol_applies_only_specified_fields():
+    cfg = _cfg_with_per_symbol()
+    btc = cfg.signals.for_symbol("BTCUSDT")
+    # funding overridden -> tighter (BTC at 0.0005 vs global 0.0010)
+    assert btc.funding_extreme.long_overheated_above == 0.0005
+    # LSR not overridden -> falls back to whatever global is (default LsrExtremeCfg)
+    assert btc.lsr_extreme.long_heavy_above == cfg.signals.lsr_extreme.long_heavy_above
+
+
+def test_per_symbol_funding_threshold_fires_on_btc_only():
+    """Funding +0.06% triggers BTC (override 0.05%) but NOT global (0.10%)."""
+    cfg = _cfg_with_per_symbol()
+    snap_btc = _snap(symbol="BTCUSDT", funding_rate=0.0006)
+    snap_eth = _snap(symbol="ETHUSDT", funding_rate=0.0006)  # no override -> global
+    assert any(any(r.name == "funding_extreme" for r in c.fired_rules)
+               for c in evaluate(snap_btc, cfg))
+    assert not any(any(r.name == "funding_extreme" for r in c.fired_rules)
+                   for c in evaluate(snap_eth, cfg))
+
+
+def test_per_symbol_liq_threshold_fires_on_sol_only():
+    """$25M long-liq triggers SOL (override $15M) but NOT BTC (override $50M)."""
+    cfg = _cfg_with_per_symbol()
+    snap_sol = _snap(symbol="SOLUSDT", long_liquidations_usd_window=25_000_000)
+    snap_btc = _snap(symbol="BTCUSDT", long_liquidations_usd_window=25_000_000)
+    assert any(any(r.name == "liq_cascade" for r in c.fired_rules)
+               for c in evaluate(snap_sol, cfg))
+    assert not any(any(r.name == "liq_cascade" for r in c.fired_rules)
+                   for c in evaluate(snap_btc, cfg))
+
+
+def test_unknown_symbol_uses_global_defaults():
+    cfg = _cfg_with_per_symbol()
+    eff = cfg.signals.for_symbol("DOGEUSDT")
+    assert eff.funding_extreme.long_overheated_above == cfg.signals.funding_extreme.long_overheated_above
