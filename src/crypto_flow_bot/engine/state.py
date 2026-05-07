@@ -35,6 +35,8 @@ class StateStore:
         self.last_alert_ts: dict[tuple[str, Direction], datetime] = {}
         # ISO-week key (e.g. "2025-W18") of the last weekly stats digest sent.
         self.last_stats_digest_week: str | None = None
+        # ISO date (YYYY-MM-DD UTC) of the last daily-liveness ping sent.
+        self.last_liveness_ping_date: str | None = None
         self._load()
 
     # ---------- persistence ----------
@@ -66,6 +68,7 @@ class StateStore:
                     close_reason=p.get("close_reason"),
                     close_price=p.get("close_price"),
                     best_favorable_pct=float(p.get("best_favorable_pct", 0.0)),
+                    strong=bool(p.get("strong", False)),
                 )
                 if not pos.closed:
                     self.positions[pos.id] = pos
@@ -79,6 +82,7 @@ class StateStore:
             except (KeyError, ValueError):
                 continue
         self.last_stats_digest_week = raw.get("last_stats_digest_week")
+        self.last_liveness_ping_date = raw.get("last_liveness_ping_date")
 
     def save(self) -> None:
         body = {
@@ -88,6 +92,7 @@ class StateStore:
                 for (s, d), ts in self.last_alert_ts.items()
             ],
             "last_stats_digest_week": self.last_stats_digest_week,
+            "last_liveness_ping_date": self.last_liveness_ping_date,
         }
         tmp = self.path.with_suffix(".tmp")
         tmp.write_text(json.dumps(body, indent=2))
@@ -132,10 +137,13 @@ class StateStore:
             sl_dist_pct = (atr_cfg.sl_atr_mult * atr) / snap.price
             sl_price = snap.price * (1 - sign * sl_dist_pct)
             existing_fractions = [lvl.fraction for lvl in cfg.exits.take_profit_levels]
-            mults = atr_cfg.tp_atr_mults
+            mults = list(atr_cfg.tp_atr_mults)
             # Pad/truncate the multiplier list to match the number of TP levels.
             if len(mults) < len(existing_fractions):
-                mults = list(mults) + [mults[-1]] * (len(existing_fractions) - len(mults))
+                mults = mults + [mults[-1]] * (len(existing_fractions) - len(mults))
+            # Confluence bonus: widen the *last* TP for strong (2+ rules) signals.
+            if candidate.is_strong and mults:
+                mults[-1] = max(mults[-1], atr_cfg.strong_last_tp_mult)
             tp_levels = [
                 TpLevelState(pct=(m * atr) / snap.price, fraction=frac)
                 for m, frac in zip(mults, existing_fractions, strict=False)
@@ -161,6 +169,7 @@ class StateStore:
             stop_loss_price=sl_price,
             initial_stop_loss_price=sl_price,
             tp_levels=tp_levels,
+            strong=candidate.is_strong,
         )
         self.positions[position.id] = position
         return position

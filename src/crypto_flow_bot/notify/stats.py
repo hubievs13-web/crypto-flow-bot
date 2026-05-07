@@ -34,7 +34,11 @@ class SignalStats:
     time_stopped: int = 0      # closed by time-stop
     invalidated: int = 0       # closed by reason-invalidation
     open_unresolved: int = 0   # still open at digest time
-    total_pnl_pct: float = 0.0  # sum of close_price-vs-entry % per closed position
+    # Weighted PnL across all closed positions: each partial TP fill is
+    # credited at the TP level's profit % weighted by its fraction; the
+    # remainder is credited at (close_price - entry) / entry. So a 50/50
+    # ladder closed at TP1 (+1.5%) and BE (0%) contributes +0.75%, not 0%.
+    total_pnl_pct: float = 0.0
 
     @property
     def closed(self) -> int:
@@ -49,6 +53,40 @@ class SignalStats:
     def avg_pnl_pct(self) -> float:
         c = self.closed
         return (self.total_pnl_pct / c * 100.0) if c else 0.0
+
+
+def position_pnl_pct(pos: dict) -> float | None:
+    """Weighted realized PnL on a closed position as a unit fraction (0.01 = +1%).
+
+    For each TP level that was hit, we credit `fraction * pct` profit. The
+    remaining open fraction at the final close is credited the close-vs-entry
+    move. Returns None when fields are missing/malformed.
+
+    Example: 50% at TP1 (+1.5%) + 50% at SL/BE (0%) → 0.5*0.015 + 0.5*0.0 = 0.0075.
+    """
+    try:
+        entry = float(pos.get("entry_price"))
+        close = pos.get("close_price")
+        direction = pos.get("direction")
+        if not entry or close is None or direction not in ("LONG", "SHORT"):
+            return None
+        sign = 1.0 if direction == "LONG" else -1.0
+        tp_levels = pos.get("tp_levels") or []
+        pnl = 0.0
+        hit_fraction = 0.0
+        for lvl in tp_levels:
+            if lvl.get("hit"):
+                frac = float(lvl.get("fraction", 0.0))
+                pct = float(lvl.get("pct", 0.0))
+                pnl += frac * pct  # TP profit always counts as +pct (fav_pct)
+                hit_fraction += frac
+        remaining = max(0.0, 1.0 - hit_fraction)
+        if remaining > 0:
+            move = (float(close) - entry) / entry * sign
+            pnl += remaining * move
+        return pnl
+    except (TypeError, ValueError, ZeroDivisionError):
+        return None
 
 
 def read_latest_positions(positions_file: Path) -> list[dict]:
@@ -120,16 +158,61 @@ def compute_stats(
             elif close_reason == "REASON_INVALIDATED":
                 s.invalidated += 1
 
-            entry = p.get("entry_price")
-            close = p.get("close_price")
-            direction = p.get("direction")
-            if entry and close and direction:
-                try:
-                    sign = 1 if direction == "LONG" else -1
-                    s.total_pnl_pct += (float(close) - float(entry)) / float(entry) * sign
-                except (TypeError, ValueError, ZeroDivisionError):
-                    pass
+            pnl = position_pnl_pct(p)
+            if pnl is not None:
+                s.total_pnl_pct += pnl
         out[name] = s
+    return out
+
+
+@dataclass
+class SymbolStats:
+    """Per-symbol aggregated outcomes for the digest window."""
+
+    symbol: str
+    count: int = 0
+    closed: int = 0
+    tp1_hit: int = 0
+    total_pnl_pct: float = 0.0
+
+    @property
+    def win_rate_pct(self) -> float:
+        return (self.tp1_hit / self.closed * 100.0) if self.closed else 0.0
+
+    @property
+    def avg_pnl_pct(self) -> float:
+        return (self.total_pnl_pct / self.closed * 100.0) if self.closed else 0.0
+
+
+def compute_symbol_stats(
+    positions: list[dict],
+    now: datetime,
+    window_days: int,
+) -> dict[str, SymbolStats]:
+    """Group positions by symbol; same window/PnL logic as compute_stats."""
+    cutoff = now - timedelta(days=window_days)
+    out: dict[str, SymbolStats] = {}
+    for pos in positions:
+        try:
+            entry_ts = datetime.fromisoformat(pos["entry_ts"])
+        except (KeyError, ValueError, TypeError):
+            continue
+        if entry_ts < cutoff:
+            continue
+        symbol = pos.get("symbol")
+        if not symbol:
+            continue
+        s = out.setdefault(symbol, SymbolStats(symbol=symbol))
+        s.count += 1
+        if not bool(pos.get("closed")):
+            continue
+        s.closed += 1
+        tp_levels = pos.get("tp_levels") or []
+        if tp_levels and tp_levels[0].get("hit"):
+            s.tp1_hit += 1
+        pnl = position_pnl_pct(pos)
+        if pnl is not None:
+            s.total_pnl_pct += pnl
     return out
 
 
@@ -138,6 +221,7 @@ def format_stats_digest(
     window_days: int,
     *,
     total_positions: int | None = None,
+    per_symbol: dict[str, SymbolStats] | None = None,
 ) -> str:
     """Render a Telegram-friendly HTML digest. Empty-stats path is handled."""
     header = f"📊 <b>Stats — last {window_days} days</b>"
@@ -147,6 +231,7 @@ def format_stats_digest(
 
     total_unique = total_positions if total_positions is not None else "?"
     lines: list[str] = [header, f"<b>Total positions:</b> {total_unique}", ""]
+    lines.append("<b>By signal type</b>")
     for name, s in sorted(stats.items(), key=lambda kv: -kv[1].count):
         lines.append(f"<b>{name}</b> — {s.count} fires")
         if s.closed > 0:
@@ -163,9 +248,22 @@ def format_stats_digest(
             lines.append(f"  still open: {s.open_unresolved}")
         lines.append("")
 
+    if per_symbol:
+        lines.append("<b>By symbol</b>")
+        for sym, ss in sorted(per_symbol.items(), key=lambda kv: -kv[1].count):
+            line = f"<b>{sym}</b> — {ss.count} positions"
+            if ss.closed > 0:
+                line += (
+                    f" · closed {ss.closed} · TP1 {ss.tp1_hit} ({ss.win_rate_pct:.0f}%) · "
+                    f"avg PnL {ss.avg_pnl_pct:+.2f}%"
+                )
+            lines.append(line)
+        lines.append("")
+
     lines.append(
-        "<i>PnL is entry→close on the whole position; doesn't account for "
-        "partial TP fills or fees. Win-rate = positions that hit TP1.</i>"
+        "<i>PnL is weighted across partial TP fills and the final close (e.g. "
+        "50% at TP1 + 50% at BE shows as +0.75%, not 0%). Win-rate = positions "
+        "that hit TP1 at least once. Fees not included.</i>"
     )
     return "\n".join(lines).rstrip()
 

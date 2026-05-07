@@ -23,6 +23,7 @@ from crypto_flow_bot.engine.state import StateStore
 from crypto_flow_bot.log.store import JsonlLogger
 from crypto_flow_bot.notify.stats import (
     compute_stats,
+    compute_symbol_stats,
     format_stats_digest,
     is_past_weekly_send_time,
     read_latest_positions,
@@ -129,11 +130,37 @@ class Bot:
             await self._sleep(self.cfg.exit_check_interval_seconds)
 
     async def _heartbeat_loop(self) -> None:
+        """Two heartbeat tracks:
+
+        1. *Chatty* periodic heartbeat (every `heartbeat_minutes`) — only when
+           `silent_when_idle: false`. Useful while debugging.
+        2. *Daily liveness* ping (once per UTC day, at `daily_liveness_hour_utc`)
+           — fires regardless of `silent_when_idle`. Lets us notice a silent
+           dead bot quickly instead of finding out via missing alerts later.
+        """
         while not self._stop.is_set():
             await self._sleep(60)
+            now = datetime.now(tz=UTC)
+
+            # Daily liveness ping (always-on).
+            liveness_hour = self.cfg.notifier.daily_liveness_hour_utc
+            today_key = now.strftime("%Y-%m-%d")
+            if (
+                liveness_hour is not None
+                and now.hour >= liveness_hour
+                and self.state.last_liveness_ping_date != today_key
+            ):
+                hb = format_heartbeat(len(self.state.open_positions()), self.cfg.symbols)
+                await self.notifier.send(hb.text)
+                await self.logger.write_alert(hb)
+                self._last_heartbeat = now
+                self.state.last_liveness_ping_date = today_key
+                self.state.save()
+                continue
+
+            # Chatty periodic heartbeat (only when not silent).
             if self.cfg.notifier.silent_when_idle:
                 continue
-            now = datetime.now(tz=UTC)
             if now - self._last_heartbeat >= timedelta(minutes=self.cfg.notifier.heartbeat_minutes):
                 self._last_heartbeat = now
                 hb = format_heartbeat(len(self.state.open_positions()), self.cfg.symbols)
@@ -173,6 +200,7 @@ class Bot:
             try:
                 positions = read_latest_positions(self.logger.positions_path)
                 stats = compute_stats(positions, now=now, window_days=cfg.window_days)
+                per_symbol = compute_symbol_stats(positions, now=now, window_days=cfg.window_days)
                 # Count unique positions in window for the header.
                 cutoff = now - timedelta(days=cfg.window_days)
                 total_unique = sum(
@@ -182,7 +210,10 @@ class Bot:
                     and datetime.fromisoformat(entry) >= cutoff
                 )
                 text = format_stats_digest(
-                    stats, window_days=cfg.window_days, total_positions=total_unique
+                    stats,
+                    window_days=cfg.window_days,
+                    total_positions=total_unique,
+                    per_symbol=per_symbol,
                 )
                 await self.notifier.send(text)
             except Exception as e:

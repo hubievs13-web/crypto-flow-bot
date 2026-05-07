@@ -72,13 +72,21 @@ class TpLevel(BaseModel):
 class TrailingCfg(BaseModel):
     enabled: bool = True
     activate_at_pct: float = 0.015
-    lock_in_pct: float = 0.0
+    # >0 means lock in at least this much profit when trailing engages.
+    # 0.0 = move SL to break-even only.
+    lock_in_pct: float = 0.005
 
 
 class ReasonInvalidationCfg(BaseModel):
     enabled: bool = True
     funding_normalized_below_abs: float = 0.0002
     lsr_normalized_band: tuple[float, float] = (0.85, 1.15)
+    # For point-in-time triggers (oi_surge, liq_cascade) there's no "metric
+    # back to normal" gate — but we can still bail out at break-even if the
+    # price has clearly reversed against the trade in the first window
+    # minutes. This stops us bleeding into the time-stop on broken setups.
+    momentum_reversal_pct: float = 0.005     # exit at BE if price moves this far against entry
+    momentum_window_minutes: int = 60        # ...within this window after entry
 
 
 class AtrSizingCfg(BaseModel):
@@ -94,6 +102,10 @@ class AtrSizingCfg(BaseModel):
     tp_atr_mults: list[float] = Field(
         default_factory=lambda: [1.5, 3.0]  # TP1, TP2 distances as ATR multiples
     )
+    # When the entry candidate has 2+ rules in confluence (`is_strong`), the
+    # final TP multiplier is replaced with this wider value to let the runner
+    # capture more of the move. Earlier TPs stay the same (still secure profit).
+    strong_last_tp_mult: float = 4.0
     fallback_to_pct: bool = True         # if ATR not available, use the % values below
 
 
@@ -121,6 +133,10 @@ class NotifierCfg(BaseModel):
     send_startup_message: bool = True
     silent_when_idle: bool = True
     heartbeat_minutes: int = 60
+    # Even when `silent_when_idle: true` suppresses the chatty heartbeat, we
+    # still want a single liveness ping per day so a silent dead bot is
+    # noticed quickly. Send at this UTC hour. Set to None to disable.
+    daily_liveness_hour_utc: int | None = 8
     # How often to poll Telegram getUpdates for incoming /start commands.
     command_poll_interval_seconds: int = 5
 

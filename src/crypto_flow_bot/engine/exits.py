@@ -119,6 +119,23 @@ def evaluate_exit(position: Position, snap: Snapshot, cfg: Config) -> list[ExitE
             if lo <= snap.long_short_ratio <= hi:
                 invalidated = True
                 why = f"L/S ratio back to {snap.long_short_ratio:.2f} (in normal band {lo}-{hi})"
+        # Momentum-reversal gate for point-in-time triggers (oi_surge, liq_cascade).
+        # Idea: these signals have no "metric normalized" gate, so if price has
+        # clearly turned against entry within the first window minutes, the
+        # squeeze/flow obviously did NOT follow through — bail at break-even
+        # instead of waiting out the time-stop.
+        if (
+            not invalidated
+            and ("oi_surge" in position.reason or "liq_cascade" in position.reason)
+            and age <= timedelta(minutes=ri.momentum_window_minutes)
+        ):
+            adverse_pct = -_favorable_pct(position, price)  # >0 = price moved against us
+            if adverse_pct >= ri.momentum_reversal_pct:
+                invalidated = True
+                why = (
+                    f"price reversed {adverse_pct * 100:.2f}% against entry within "
+                    f"{age.total_seconds() / 60:.0f}m (no follow-through on squeeze)"
+                )
         if invalidated:
             events.append(
                 ExitEvent(

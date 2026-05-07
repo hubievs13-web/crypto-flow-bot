@@ -146,3 +146,33 @@ def test_liq_cascade_below_threshold_does_not_fire():
     snap = _snap(long_liquidations_usd_window=10_000_000.0)
     out = evaluate(snap, _cfg())
     assert all(not any(r.name == "liq_cascade" for r in c.fired_rules) for c in out)
+
+
+# ─── Confluence: 2+ rules in same direction → is_strong ──────────────────────
+
+def test_single_rule_signal_is_not_strong():
+    """One rule fired = not strong (regular signal)."""
+    snap = _snap(funding_rate=0.0010)
+    out = evaluate(snap, _cfg())
+    assert len(out) == 1
+    assert out[0].is_strong is False
+
+
+def test_two_rules_in_same_direction_is_strong():
+    """funding_extreme (positive) + lsr_extreme (longs heavy) both yield SHORT → strong."""
+    snap = _snap(funding_rate=0.0012, long_short_ratio=2.7)
+    out = evaluate(snap, _cfg())
+    short = [c for c in out if c.direction is Direction.SHORT]
+    assert short
+    rule_names = {r.name for r in short[0].fired_rules}
+    assert {"funding_extreme", "lsr_extreme"}.issubset(rule_names)
+    assert short[0].is_strong is True
+
+
+def test_rules_split_across_directions_not_strong_for_either():
+    """funding is + (SHORT signal) and LSR shows shorts heavy (LONG signal) →
+    opposite directions, neither is a strong confluence."""
+    snap = _snap(funding_rate=0.0012, long_short_ratio=0.5)
+    out = evaluate(snap, _cfg())
+    for c in out:
+        assert c.is_strong is False

@@ -113,6 +113,7 @@ def format_entry_alert(candidate: SignalCandidate, position: Position, cfg: Conf
     sym = _pretty(candidate.symbol, cfg)
     arrow = "🟢" if candidate.direction is Direction.LONG else "🔴"
     side = "LONG" if candidate.direction is Direction.LONG else "SHORT"
+    strong_tag = " 🔥 <b>STRONG</b>" if candidate.is_strong else ""
     rule_lines = "\n".join(f"  • {r.description}" for r in candidate.fired_rules)
     tp_lines = "\n".join(
         f"  TP{i + 1} ({lvl.fraction * 100:.0f}%): <code>{position.entry_price * (1 + position.direction.sign * lvl.pct):g}</code>  ({lvl.pct * 100:+.2f}%)"
@@ -121,7 +122,7 @@ def format_entry_alert(candidate: SignalCandidate, position: Position, cfg: Conf
     # SL distance derived from the actual position (so ATR-sized stops display correctly).
     sl_pct = (position.stop_loss_price - position.entry_price) / position.entry_price * position.direction.sign
     text = (
-        f"{arrow} <b>{side} {sym}</b> @ <code>{position.entry_price:g}</code>\n"
+        f"{arrow} <b>{side} {sym}</b> @ <code>{position.entry_price:g}</code>{strong_tag}\n"
         f"<i>{position.id}</i>\n"
         f"\n<b>Why:</b>\n{rule_lines}\n"
         f"\n<b>Plan:</b>\n"
@@ -155,7 +156,12 @@ def format_exit_alert(position: Position, ev: ExitEvent, snap_price: float, cfg:
     elif ev.kind == "TIME_STOP":
         head = f"⏰ Time stop on {side} {sym} — close all"
     elif ev.kind == "REASON_INVALIDATED":
-        head = f"❎ Reason invalidated on {side} {sym} — close at break-even"
+        # Momentum-reversal invalidation triggers a small-loss exit, not BE;
+        # the funding/LSR normalization path usually fires near BE.
+        if "reversed" in ev.description:
+            head = f"❎ No follow-through on {side} {sym} — close early"
+        else:
+            head = f"❎ Reason invalidated on {side} {sym} — close at break-even"
     elif ev.kind == "TRAILING_MOVE":
         head = f"🟦 Trailing move on {side} {sym}"
     else:

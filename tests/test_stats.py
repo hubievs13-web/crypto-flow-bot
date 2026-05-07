@@ -186,3 +186,133 @@ def test_digest_gate_handles_sunday_target():
     assert is_past_weekly_send_time(
         datetime(2025, 11, 2, 12, 0, tzinfo=UTC), weekday=6, hour_utc=12
     )
+
+
+# ─── Weighted PnL across partial closes (item #8) ──────────────────────────
+
+from crypto_flow_bot.notify.stats import SymbolStats, compute_symbol_stats, position_pnl_pct  # noqa: E402
+
+
+def test_position_pnl_weighted_50_tp1_50_be():
+    """50% closed at TP1 (+1.5%) + 50% at BE → 0.5*0.015 + 0.5*0.0 = 0.75%."""
+    pos = _pos(
+        "x", reason="funding_extreme", direction="LONG",
+        entry_ts=datetime.now(tz=UTC), entry_price=100.0, close_price=100.0,
+        close_reason="REASON_INVALIDATED",
+        tp_levels=[
+            {"pct": 0.015, "fraction": 0.5, "hit": True},
+            {"pct": 0.030, "fraction": 0.5, "hit": False},
+        ],
+    )
+    pnl = position_pnl_pct(pos)
+    assert pnl is not None and abs(pnl - 0.0075) < 1e-9
+
+
+def test_position_pnl_weighted_both_tps_hit():
+    """Both TP levels hit → 0.5*0.015 + 0.5*0.030 = 2.25%."""
+    pos = _pos(
+        "x", reason="funding_extreme", direction="LONG",
+        entry_ts=datetime.now(tz=UTC), entry_price=100.0, close_price=103.0,
+        close_reason="TP_HIT",
+        tp_levels=[
+            {"pct": 0.015, "fraction": 0.5, "hit": True},
+            {"pct": 0.030, "fraction": 0.5, "hit": True},
+        ],
+    )
+    pnl = position_pnl_pct(pos)
+    assert pnl is not None and abs(pnl - 0.0225) < 1e-9
+
+
+def test_position_pnl_weighted_short_full_loss():
+    """No TPs hit, SHORT closed at SL → full loss = -SL%."""
+    pos = _pos(
+        "x", reason="lsr_extreme", direction="SHORT",
+        entry_ts=datetime.now(tz=UTC), entry_price=100.0, close_price=101.5,
+        close_reason="SL_HIT",
+        tp_levels=[
+            {"pct": 0.015, "fraction": 0.5, "hit": False},
+            {"pct": 0.030, "fraction": 0.5, "hit": False},
+        ],
+    )
+    pnl = position_pnl_pct(pos)
+    # SHORT: (101.5 - 100)/100 * -1 = -0.015
+    assert pnl is not None and abs(pnl - (-0.015)) < 1e-9
+
+
+def test_position_pnl_handles_missing_fields():
+    assert position_pnl_pct({}) is None
+    assert position_pnl_pct({"entry_price": 100.0}) is None
+
+
+def test_compute_stats_uses_weighted_pnl():
+    """compute_stats should sum the weighted PnL, not the entry→close move."""
+    now = datetime.now(tz=UTC)
+    # Single position: 50% TP1 (+1.5%), then SL/BE close → expected 0.75%.
+    positions = [
+        _pos("a", reason="funding_extreme", direction="LONG",
+             entry_ts=now - timedelta(hours=1),
+             entry_price=100.0, close_price=100.0,
+             close_reason="REASON_INVALIDATED",
+             tp_levels=[
+                 {"pct": 0.015, "fraction": 0.5, "hit": True},
+                 {"pct": 0.030, "fraction": 0.5, "hit": False},
+             ]),
+    ]
+    out = compute_stats(positions, now=now, window_days=7)
+    assert abs(out["funding_extreme"].avg_pnl_pct - 0.75) < 1e-6
+
+
+# ─── Per-symbol stats (item #14) ────────────────────────────────────────────
+
+def test_compute_symbol_stats_groups_by_symbol():
+    now = datetime.now(tz=UTC)
+    btc_win = _pos(
+        "a", reason="funding_extreme", direction="LONG",
+        entry_ts=now - timedelta(hours=1), entry_price=100.0, close_price=101.5,
+        close_reason="TP_HIT",
+        tp_levels=[
+            {"pct": 0.015, "fraction": 0.5, "hit": True},
+            {"pct": 0.030, "fraction": 0.5, "hit": False},
+        ],
+    )
+    btc_win["symbol"] = "BTCUSDT"
+    sol_loss = _pos(
+        "b", reason="lsr_extreme", direction="SHORT",
+        entry_ts=now - timedelta(hours=2), entry_price=100.0, close_price=101.5,
+        close_reason="SL_HIT",
+    )
+    sol_loss["symbol"] = "SOLUSDT"
+    out = compute_symbol_stats([btc_win, sol_loss], now=now, window_days=7)
+    assert set(out.keys()) == {"BTCUSDT", "SOLUSDT"}
+    assert out["BTCUSDT"].count == 1
+    assert out["BTCUSDT"].tp1_hit == 1
+    assert out["BTCUSDT"].closed == 1
+    assert out["BTCUSDT"].win_rate_pct == 100.0
+    assert out["SOLUSDT"].tp1_hit == 0
+    assert out["SOLUSDT"].closed == 1
+    assert out["SOLUSDT"].win_rate_pct == 0.0
+
+
+def test_format_digest_includes_per_symbol_section():
+    sig = SignalStats(name="funding_extreme", count=2, tp1_hit=1)
+    sig.total_pnl_pct = 0.01
+    sym_btc = SymbolStats(symbol="BTCUSDT", count=1, closed=1, tp1_hit=1, total_pnl_pct=0.0075)
+    text = format_stats_digest(
+        {"funding_extreme": sig}, window_days=7, total_positions=1, per_symbol={"BTCUSDT": sym_btc}
+    )
+    assert "By symbol" in text
+    assert "BTCUSDT" in text
+    assert "By signal type" in text
+
+
+def test_format_digest_omits_symbol_section_when_empty():
+    sig = SignalStats(name="funding_extreme", count=1)
+    text = format_stats_digest({"funding_extreme": sig}, window_days=7, total_positions=1)
+    assert "By symbol" not in text
+
+
+def test_format_digest_disclaimer_says_weighted():
+    sig = SignalStats(name="funding_extreme", count=1, tp1_hit=1)
+    sig.total_pnl_pct = 0.01
+    text = format_stats_digest({"funding_extreme": sig}, window_days=7, total_positions=1)
+    assert "weighted" in text.lower()

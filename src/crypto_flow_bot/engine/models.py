@@ -91,6 +91,10 @@ class Position:
     # Trailing tracking.
     best_favorable_pct: float = 0.0  # max favorable excursion since entry
 
+    # Confluence: was this opened by 2+ distinct rules in the same direction?
+    # Used by the alert formatter (STRONG marker) and stats (per-strength rates).
+    strong: bool = False
+
     def to_log_dict(self) -> dict:
         d = {
             "id": self.id,
@@ -109,6 +113,7 @@ class Position:
             "close_reason": self.close_reason,
             "close_price": self.close_price,
             "best_favorable_pct": self.best_favorable_pct,
+            "strong": self.strong,
         }
         return d
 
