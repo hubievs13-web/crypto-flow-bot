@@ -97,17 +97,23 @@ exits:
   trailing:
     enabled: true
     activate_at_pct: 0.015 # start trailing after +1.5%
-    lock_in_pct: 0.0       # 0.0 = move SL to break-even (you can't lose after TP1)
+    lock_in_pct: 0.005     # lock in at least +0.5% — if reaches +1.5% then reverses, you exit at +0.5%
 
   # Time stop: close the position after this long if no other exit fired.
   time_stop_minutes: 240   # 4 hours
 
-  # Reason-invalidation: close (in break-even) when the metric that triggered
-  # the entry has normalized.
+  # Reason-invalidation: close (near break-even) when the original entry thesis
+  # has clearly broken.
+  #   - funding_extreme → close once |funding| is back below normalized band
+  #   - lsr_extreme     → close once L/S ratio is back inside normalized band
+  #   - oi_surge / liq_cascade → no metric to gate on, so we use a momentum
+  #     check: if price has reversed against entry within window, bail early
   reason_invalidation:
     enabled: true
-    funding_normalized_below_abs: 0.0002  # close funding-driven trades when |funding| < 0.02%
-    lsr_normalized_band: [0.85, 1.15]      # close LSR-driven trades when ratio is back here
+    funding_normalized_below_abs: 0.0002      # |funding| < 0.02% counts as normalized
+    lsr_normalized_band: [0.85, 1.15]          # L/S back inside this band counts as normalized
+    momentum_reversal_pct: 0.005               # 0.5% reverse against entry triggers early exit
+    momentum_window_minutes: 60                # ...only within first 60 minutes after entry
 
 # ─── Notifier formatting ────────────────────────────────────────────────────
 notifier:
@@ -124,6 +130,11 @@ notifier:
   # heartbeat is sent every `heartbeat_minutes`.
   silent_when_idle: true
   heartbeat_minutes: 60
+
+  # Daily liveness ping — sent once per UTC day at this hour, even when
+  # `silent_when_idle: true`. Lets you notice a silent dead bot quickly.
+  # Set to null to disable.
+  daily_liveness_hour_utc: 8
 
   # How often to poll Telegram for incoming /start commands (seconds).
   command_poll_interval_seconds: 5
@@ -146,3 +157,19 @@ stats:
   hour_utc: 12     # send at 12:00 UTC every Monday
   window_days: 7   # rolling window of positions to summarize
 
+
+# ─── Risk management ───────────────────────────────────────────────────────
+# Two top-level guards applied *before* opening any new position. Independent
+# of signal strength: they only enforce dispersion and bound drawdown.
+risk:
+  # Hard cap on simultaneously open virtual positions across all symbols.
+  # BTC/ETH/SOL are highly correlated, so 3 simultaneous LONGs ≈ 3× same beta.
+  max_concurrent_positions: 2
+
+  # Optional per-direction cap. If set (e.g. 1), at most that many LONGs and
+  # at most that many SHORTs may be open at the same time. null disables.
+  max_per_direction: null
+
+  # Daily loss circuit breaker: after this many SL_HIT exits in the current
+  # UTC day, refuse to open new positions until UTC midnight. null disables.
+  max_daily_losses: 3

@@ -30,6 +30,16 @@ class SignalCandidate:
     def reason_label(self) -> str:
         return "+".join(r.name for r in self.fired_rules)
 
+    @property
+    def is_strong(self) -> bool:
+        """Confluence: 2+ distinct rules fired in the same direction.
+
+        These setups historically have higher EV — the bot uses a wider TP2
+        and shows a 'STRONG' marker in the entry alert.
+        """
+        unique_names = {r.name for r in self.fired_rules}
+        return len(unique_names) >= 2
+
 
 def evaluate(snap: Snapshot, cfg: Config) -> list[SignalCandidate]:
     """Return zero or more entry candidates for this snapshot. One per direction at most."""

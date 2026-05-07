@@ -77,15 +77,18 @@ def test_first_tp_level_fires_then_second():
     assert tp_events2[0].fraction_closed == 0.5
 
 
-def test_trailing_moves_stop_to_breakeven_after_activation():
+def test_trailing_locks_in_minimum_profit_after_activation():
     pos = _long_position(entry=100.0)
     cfg = _cfg()
     assert pos.stop_loss_price < 100.0  # initial SL below entry
-    # Hit +1.5% -> trailing activates, lock_in_pct default 0 -> SL to entry.
+    # Hit +1.5% -> trailing activates with default lock_in_pct=0.005,
+    # so SL moves to entry * (1 + 0.005) = 100.5 (locks in +0.5%).
     events = evaluate_exit(pos, _snap(101.5), cfg)
     trail = [e for e in events if e.kind == "TRAILING_MOVE"]
     assert len(trail) == 1
-    assert trail[0].new_stop_loss_price == 100.0
+    expected_sl = 100.0 * (1 + cfg.exits.trailing.lock_in_pct)
+    assert trail[0].new_stop_loss_price == expected_sl
+    assert trail[0].new_stop_loss_price > 100.0  # locked into profit, not just BE
 
 
 def test_time_stop_after_configured_minutes():
@@ -103,6 +106,53 @@ def test_reason_invalidation_on_funding_normalization():
     )
     events = evaluate_exit(pos, snap, cfg)
     assert any(e.kind == "REASON_INVALIDATED" for e in events)
+
+
+def test_momentum_reversal_invalidates_oi_surge_long():
+    """LONG opened on oi_surge — price drops 0.6% in first 30m → bail out."""
+    cfg = _cfg()
+    pos = _long_position(entry=100.0, age_minutes=30, reason="oi_surge")
+    # Drop 0.6% — beyond default 0.5% threshold, but still above SL.
+    events = evaluate_exit(pos, _snap(99.4), cfg)
+    invalidated = [e for e in events if e.kind == "REASON_INVALIDATED"]
+    assert len(invalidated) == 1
+    assert "reversed" in invalidated[0].description
+    assert invalidated[0].fraction_closed == pos.open_fraction
+
+
+def test_momentum_reversal_invalidates_liq_cascade_short():
+    """SHORT opened on liq_cascade — price pumps 0.6% in first 45m → bail out."""
+    cfg = _cfg()
+    pos = _short_position(entry=100.0, age_minutes=45, reason="liq_cascade")
+    events = evaluate_exit(pos, _snap(100.6), cfg)
+    invalidated = [e for e in events if e.kind == "REASON_INVALIDATED"]
+    assert len(invalidated) == 1
+    assert "reversed" in invalidated[0].description
+
+
+def test_momentum_reversal_below_threshold_does_not_invalidate():
+    """0.3% reverse (below 0.5% threshold) is just noise."""
+    cfg = _cfg()
+    pos = _long_position(entry=100.0, age_minutes=30, reason="oi_surge")
+    events = evaluate_exit(pos, _snap(99.7), cfg)
+    assert not any(e.kind == "REASON_INVALIDATED" for e in events)
+
+
+def test_momentum_reversal_outside_window_does_not_invalidate():
+    """After window expires (default 60m), no momentum-reversal exit."""
+    cfg = _cfg()
+    pos = _long_position(entry=100.0, age_minutes=90, reason="oi_surge")
+    events = evaluate_exit(pos, _snap(99.4), cfg)
+    assert not any(e.kind == "REASON_INVALIDATED" for e in events)
+
+
+def test_momentum_reversal_does_not_apply_to_funding_only():
+    """Funding-only reason still uses metric-normalization gate, not momentum."""
+    cfg = _cfg()
+    pos = _long_position(entry=100.0, age_minutes=30, reason="funding_extreme")
+    # 0.6% drop, no funding metric on snapshot — must NOT invalidate.
+    events = evaluate_exit(pos, _snap(99.4), cfg)
+    assert not any(e.kind == "REASON_INVALIDATED" for e in events)
 
 
 def test_no_events_when_position_calm():
