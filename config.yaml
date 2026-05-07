@@ -26,33 +26,39 @@ alert_cooldown_seconds: 7200  # 2h
 # (any of them is enough). The signal engine reports which rule(s) fired.
 
 signals:
-  # Global defaults — these are applied to any symbol that does NOT have a
-  # per-symbol override below. For the three watched symbols (BTC/ETH/SOL)
-  # the `per_symbol:` block at the bottom of `signals:` takes precedence.
-  # Globals are intentionally a touch tighter than the per-symbol values
-  # so that adding a new symbol (e.g. DOGE) without an explicit block stays
-  # safe by default.
+  # Calibrated against late-Apr/early-May 2026 market data:
+  #   • BTC spot volume at multi-year lows (low-vol regime)
+  #   • Recent BTC funding range: −0.03% to +0.01% (2y median is +0.005%)
+  #   • ETH/SOL funding similar to BTC, SOL marginally wider
+  #   • Liquidation cascades on majors typically print $20–80M aggregated
+  # Thresholds target the top ~5–10% of the recent rolling distribution per
+  # coin so triggers fire often enough to be useful but rare enough to be
+  # tradable. Phase 2 (next PR, after ~7–14 days of snapshots.jsonl history)
+  # replaces these statics with rolling z-score / percentile thresholds.
+  #
+  # Globals are slightly tighter than per-symbol so an added symbol without
+  # an explicit block (e.g. DOGE) stays safe by default.
 
   funding_extreme:
     enabled: true
-    long_overheated_above: 0.0008    # +0.08% / 8h
-    short_overheated_below: -0.0006  # -0.06% / 8h
+    long_overheated_above: 0.00025   # +0.025% / 8h
+    short_overheated_below: -0.00025 # -0.025% / 8h
 
   oi_surge:
     enabled: true
     window_minutes: 60
-    pct_change_threshold: 0.04
+    pct_change_threshold: 0.035
     require_price_aligned: true
 
   lsr_extreme:
     enabled: true
-    long_heavy_above: 2.5
-    short_heavy_below: 0.6
+    long_heavy_above: 2.2
+    short_heavy_below: 0.65
 
   liq_cascade:
     enabled: true
     window_minutes: 5
-    usd_threshold: 50_000_000
+    usd_threshold: 25_000_000
 
   # 1h EMA trend filter — drops counter-trend signals when the larger trend is clear.
   # Liquidation cascades are exempt: a long-flush in an uptrend (or short-squeeze
@@ -72,59 +78,59 @@ signals:
     BTCUSDT:
       funding_extreme:
         enabled: true
-        long_overheated_above: 0.0005    # +0.05% / 8h
-        short_overheated_below: -0.0004  # -0.04% / 8h
+        long_overheated_above: 0.00020   # +0.020% (recent BTC max ~+0.01%, top 5% ~+0.02%)
+        short_overheated_below: -0.00025 # -0.025% (recent BTC min ~-0.03%)
       lsr_extreme:
         enabled: true
-        long_heavy_above: 2.3
-        short_heavy_below: 0.65
+        long_heavy_above: 2.0
+        short_heavy_below: 0.70
       oi_surge:
         enabled: true
         window_minutes: 60
-        pct_change_threshold: 0.035
-        require_price_aligned: true
-      liq_cascade:
-        enabled: true
-        window_minutes: 5
-        usd_threshold: 50_000_000
-
-    ETHUSDT:
-      funding_extreme:
-        enabled: true
-        long_overheated_above: 0.0005
-        short_overheated_below: -0.0004
-      lsr_extreme:
-        enabled: true
-        long_heavy_above: 2.3
-        short_heavy_below: 0.65
-      oi_surge:
-        enabled: true
-        window_minutes: 60
-        pct_change_threshold: 0.035
+        pct_change_threshold: 0.030
         require_price_aligned: true
       liq_cascade:
         enabled: true
         window_minutes: 5
         usd_threshold: 30_000_000
 
-    SOLUSDT:
+    ETHUSDT:
       funding_extreme:
         enabled: true
-        long_overheated_above: 0.0006    # alts swing wider on funding
-        short_overheated_below: -0.0005
+        long_overheated_above: 0.00020
+        short_overheated_below: -0.00025
       lsr_extreme:
         enabled: true
-        long_heavy_above: 2.5
-        short_heavy_below: 0.6
+        long_heavy_above: 2.0
+        short_heavy_below: 0.70
       oi_surge:
         enabled: true
         window_minutes: 60
-        pct_change_threshold: 0.04
+        pct_change_threshold: 0.030
         require_price_aligned: true
       liq_cascade:
         enabled: true
         window_minutes: 5
-        usd_threshold: 15_000_000        # SOL liq-book is much smaller than BTC/ETH
+        usd_threshold: 20_000_000
+
+    SOLUSDT:
+      funding_extreme:
+        enabled: true
+        long_overheated_above: 0.00030   # SOL funding swings wider — recent extremes ~±0.05%
+        short_overheated_below: -0.00035
+      lsr_extreme:
+        enabled: true
+        long_heavy_above: 2.2            # SOL crowds slightly more than BTC/ETH
+        short_heavy_below: 0.65
+      oi_surge:
+        enabled: true
+        window_minutes: 60
+        pct_change_threshold: 0.035      # SOL OI moves faster than BTC/ETH
+        require_price_aligned: true
+      liq_cascade:
+        enabled: true
+        window_minutes: 5
+        usd_threshold: 10_000_000        # SOL liq-book ~5x smaller than BTC
 
 # ─── Exit rules (applied to the "virtual" position the bot tracks) ──────────
 # The bot does NOT execute orders. It only TELLS you to exit, in three ways.
