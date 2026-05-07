@@ -56,12 +56,49 @@ class TrendFilterCfg(BaseModel):
     require_alignment: bool = True  # if true, drop SHORT signals above EMA / LONG signals below
 
 
+class SymbolOverridesCfg(BaseModel):
+    """Per-symbol threshold overrides. Any field set here replaces the global
+    default *only for that symbol*. Fields left as None inherit the global.
+
+    BTC/ETH/SOL have very different "normal" funding/LSR/OI/liq profiles, so a
+    single threshold either spams alts or starves majors. Per-symbol blocks
+    let you tune each pair independently.
+    """
+
+    funding_extreme: FundingExtremeCfg | None = None
+    oi_surge: OiSurgeCfg | None = None
+    lsr_extreme: LsrExtremeCfg | None = None
+    liq_cascade: LiqCascadeCfg | None = None
+
+
 class SignalsCfg(BaseModel):
     funding_extreme: FundingExtremeCfg = Field(default_factory=FundingExtremeCfg)
     oi_surge: OiSurgeCfg = Field(default_factory=OiSurgeCfg)
     lsr_extreme: LsrExtremeCfg = Field(default_factory=LsrExtremeCfg)
     liq_cascade: LiqCascadeCfg = Field(default_factory=LiqCascadeCfg)
     trend_filter: TrendFilterCfg = Field(default_factory=TrendFilterCfg)
+    # Optional per-symbol overrides keyed by symbol (e.g. "BTCUSDT").
+    per_symbol: dict[str, SymbolOverridesCfg] = Field(default_factory=dict)
+
+    def for_symbol(self, symbol: str) -> SignalsCfg:
+        """Return a SignalsCfg with per-symbol overrides applied.
+
+        Returns self unchanged when no overrides are configured for `symbol`.
+        Otherwise returns a shallow copy with each non-None override field
+        replacing the matching global subconfig. Trend filter and per_symbol
+        themselves are not overrideable (no use case yet).
+        """
+        ov = self.per_symbol.get(symbol)
+        if ov is None:
+            return self
+        return SignalsCfg(
+            funding_extreme=ov.funding_extreme or self.funding_extreme,
+            oi_surge=ov.oi_surge or self.oi_surge,
+            lsr_extreme=ov.lsr_extreme or self.lsr_extreme,
+            liq_cascade=ov.liq_cascade or self.liq_cascade,
+            trend_filter=self.trend_filter,
+            per_symbol=self.per_symbol,
+        )
 
 
 class TpLevel(BaseModel):

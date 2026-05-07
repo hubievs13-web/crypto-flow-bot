@@ -46,7 +46,9 @@ def evaluate(snap: Snapshot, cfg: Config) -> list[SignalCandidate]:
     long_rules: list[FiredRule] = []
     short_rules: list[FiredRule] = []
 
-    sig = cfg.signals
+    # Per-symbol override resolution: for BTC/ETH/SOL we want different
+    # thresholds (a single global value either spams alts or starves majors).
+    sig = cfg.signals.for_symbol(snap.symbol)
 
     if sig.funding_extreme.enabled and snap.funding_rate is not None:
         f = snap.funding_rate
