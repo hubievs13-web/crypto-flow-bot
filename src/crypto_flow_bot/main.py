@@ -76,6 +76,10 @@ class Bot:
         self.logger = logger
         self._stop = asyncio.Event()
         self._last_heartbeat = datetime.now(tz=UTC)
+        # Cache of the most recent full snapshot per symbol. Used by the
+        # exit-loop so reason_invalidation can see funding/LSR/OI without
+        # re-fetching them every few seconds. Updated by `_poll_loop`.
+        self._last_full_snapshot: dict[str, Snapshot] = {}
 
     def request_stop(self) -> None:
         self._stop.set()
@@ -98,22 +102,30 @@ class Bot:
     async def _poll_loop(self) -> None:
         while not self._stop.is_set():
             for symbol in self.cfg.symbols:
+                # Per-symbol overrides resolution: oi_surge.window_minutes
+                # may differ per symbol. Use the resolved value when fetching
+                # the OI history window.
+                sig = self.cfg.signals.for_symbol(symbol)
                 try:
                     snap = await build_snapshot(
                         self.client,
                         self.liq_stream,
                         symbol,
-                        oi_window_minutes=self.cfg.signals.oi_surge.window_minutes,
+                        oi_window_minutes=sig.oi_surge.window_minutes,
                     )
                 except Exception as e:
                     log.warning("snapshot for %s failed: %s", symbol, e)
                     continue
+                self._last_full_snapshot[symbol] = snap
                 await self.logger.write_snapshot(snap)
                 await self._handle_entry_signals(snap)
             await self._sleep(self.cfg.poll_interval_seconds)
 
     async def _exit_loop(self) -> None:
-        # We need fresh prices to check SL/TP. Reuse the latest mark price call (cheap).
+        # Fetch a fresh price each cycle (cheap REST call) and combine it with
+        # the metrics from the latest full poll-loop snapshot for this symbol.
+        # Without the cached metrics, reason_invalidation for funding/LSR can
+        # never fire (their checks require those fields on the snapshot).
         while not self._stop.is_set():
             for pos in list(self.state.open_positions()):
                 try:
@@ -121,13 +133,39 @@ class Bot:
                 except Exception as e:
                     log.warning("price for %s failed: %s", pos.symbol, e)
                     continue
-                # Build a slim snapshot for evaluate_exit (only price + previously seen metrics).
-                snap = Snapshot(symbol=pos.symbol, ts=datetime.now(tz=UTC), price=price)
+                snap = self._build_exit_snapshot(pos.symbol, price)
                 events = evaluate_exit(pos, snap, self.cfg)
                 for ev in events:
                     await self._handle_exit_event(pos, ev, price)
             self.state.save()
             await self._sleep(self.cfg.exit_check_interval_seconds)
+
+    def _build_exit_snapshot(self, symbol: str, price: float) -> Snapshot:
+        """Compose a Snapshot for the exit-loop.
+
+        Uses the most recent full snapshot's metrics (funding/LSR/OI/liq) so
+        reason_invalidation in `evaluate_exit` can see them. Falls back to a
+        price-only snapshot when no full snapshot has been recorded yet (e.g.
+        right after process start).
+        """
+        now = datetime.now(tz=UTC)
+        last = self._last_full_snapshot.get(symbol)
+        if last is None:
+            return Snapshot(symbol=symbol, ts=now, price=price)
+        return Snapshot(
+            symbol=symbol,
+            ts=now,
+            price=price,
+            funding_rate=last.funding_rate,
+            open_interest_usd=last.open_interest_usd,
+            open_interest_change_pct_window=last.open_interest_change_pct_window,
+            long_short_ratio=last.long_short_ratio,
+            long_liquidations_usd_window=last.long_liquidations_usd_window,
+            short_liquidations_usd_window=last.short_liquidations_usd_window,
+            price_change_pct_1h=last.price_change_pct_1h,
+            ema50_1h=last.ema50_1h,
+            atr_1h=last.atr_1h,
+        )
 
     async def _heartbeat_loop(self) -> None:
         """Two heartbeat tracks:
@@ -225,7 +263,23 @@ class Bot:
     # ---------- entry / exit handling ----------
 
     async def _handle_entry_signals(self, snap: Snapshot) -> None:
-        for candidate in evaluate(snap, self.cfg):
+        candidates = evaluate(snap, self.cfg)
+        # Conflict policy: if rules fired in *both* directions on the same
+        # snapshot, skip the whole symbol this tick. The OR-logic means the
+        # market is sending mixed signals and the previous "open LONG first,
+        # then block SHORT as opposite-side" behavior arbitrarily picked one.
+        # Skipping is safer until we have a confluence score (Phase 2).
+        if len({c.direction for c in candidates}) >= 2:
+            log.info(
+                "skipping %s — conflicting signals: %s",
+                snap.symbol,
+                " | ".join(
+                    f"{c.direction.value}:{','.join(r.name for r in c.fired_rules)}"
+                    for c in candidates
+                ),
+            )
+            return
+        for candidate in candidates:
             cd = self.state.cooldown_remaining_seconds(
                 candidate.symbol, candidate.direction, self.cfg.alert_cooldown_seconds
             )
