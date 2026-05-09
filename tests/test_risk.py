@@ -29,6 +29,9 @@ def _bot(tmp_path, cfg: Config) -> Bot:
     bot.logger = MagicMock()
     bot.logger.write_alert = AsyncMock()
     bot.logger.write_position = AsyncMock()
+    # Bot.__new__ skips __init__, so wire up the snapshot cache used by
+    # `_build_exit_snapshot`.
+    bot._last_full_snapshot = {}
     return bot
 
 
@@ -95,6 +98,94 @@ async def test_handle_exit_event_increments_loss_counter(tmp_path):
     ev.new_stop_loss_price = None
     await bot._handle_exit_event(pos, ev, price=98.0)
     assert bot.state.losses_today_count == 1
+
+
+@pytest.mark.asyncio
+async def test_conflict_policy_skips_when_long_and_short_both_fire(tmp_path):
+    """A snapshot that fires *both* a LONG and a SHORT rule must be skipped
+    entirely instead of arbitrarily opening LONG first (and then blocking the
+    SHORT as opposite-side, which was the previous behavior)."""
+    from crypto_flow_bot.config import (
+        FundingExtremeCfg,
+        LsrExtremeCfg,
+        SignalsCfg,
+    )
+
+    cfg = Config(
+        symbols=["BTCUSDT"],
+        risk=RiskCfg(max_concurrent_positions=10, max_daily_losses=None),
+        signals=SignalsCfg(
+            # funding +0.001 → LONG side normally NOT triggered, SHORT trigger above 0.0008
+            funding_extreme=FundingExtremeCfg(
+                long_overheated_above=0.0008, short_overheated_below=-0.0008,
+            ),
+            # LSR 0.5 → SHORT side normally NOT triggered, LONG trigger below 0.6
+            lsr_extreme=LsrExtremeCfg(long_heavy_above=2.5, short_heavy_below=0.6),
+        ),
+    )
+    bot = _bot(tmp_path, cfg)
+    # Construct a snapshot where funding fires SHORT (+0.0012) AND LSR fires
+    # LONG (0.55) at the same time → conflict.
+    snap = Snapshot(
+        symbol="BTCUSDT", ts=datetime.now(tz=UTC), price=100.0, atr_1h=1.0,
+        funding_rate=0.0012, long_short_ratio=0.55,
+    )
+    await bot._handle_entry_signals(snap)
+    # Conflict policy: skip both directions, no position opened.
+    assert len(bot.state.open_positions()) == 0
+
+
+@pytest.mark.asyncio
+async def test_conflict_policy_does_not_block_single_direction(tmp_path):
+    """Sanity: when only one direction fires (even with multiple rules), the
+    conflict policy must NOT skip — strong confluence in one direction is the
+    happy path."""
+    cfg = Config(symbols=["BTCUSDT"])
+    bot = _bot(tmp_path, cfg)
+    snap = Snapshot(
+        symbol="BTCUSDT", ts=datetime.now(tz=UTC), price=100.0, atr_1h=1.0,
+        funding_rate=0.0012,           # SHORT
+        long_short_ratio=2.7,          # SHORT (same direction)
+    )
+    await bot._handle_entry_signals(snap)
+    open_positions = bot.state.open_positions()
+    assert len(open_positions) == 1
+    assert open_positions[0].direction == Direction.SHORT
+
+
+def test_build_exit_snapshot_uses_last_full_snapshot_metrics(tmp_path):
+    """Exit-loop must combine fresh price with the latest cached funding/LSR
+    so that reason_invalidation for funding_extreme/lsr_extreme can fire."""
+    cfg = Config(symbols=["BTCUSDT"])
+    bot = _bot(tmp_path, cfg)
+    bot._last_full_snapshot["BTCUSDT"] = Snapshot(
+        symbol="BTCUSDT", ts=datetime.now(tz=UTC), price=100.0,
+        funding_rate=0.0001, long_short_ratio=1.05, atr_1h=1.2,
+        open_interest_change_pct_window=0.01,
+        long_liquidations_usd_window=1_000_000.0,
+        short_liquidations_usd_window=2_000_000.0,
+        ema50_1h=98.7,
+    )
+    snap = bot._build_exit_snapshot("BTCUSDT", price=101.5)
+    assert snap.price == 101.5
+    assert snap.funding_rate == 0.0001
+    assert snap.long_short_ratio == 1.05
+    assert snap.atr_1h == 1.2
+    assert snap.open_interest_change_pct_window == 0.01
+    assert snap.long_liquidations_usd_window == 1_000_000.0
+    assert snap.short_liquidations_usd_window == 2_000_000.0
+    assert snap.ema50_1h == 98.7
+
+
+def test_build_exit_snapshot_falls_back_to_price_only_without_cache(tmp_path):
+    """Right after process start the cache is empty — must not crash, just
+    return a price-only snapshot."""
+    cfg = Config(symbols=["BTCUSDT"])
+    bot = _bot(tmp_path, cfg)
+    snap = bot._build_exit_snapshot("BTCUSDT", price=42.0)
+    assert snap.price == 42.0
+    assert snap.funding_rate is None
+    assert snap.long_short_ratio is None
 
 
 @pytest.mark.asyncio

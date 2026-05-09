@@ -199,35 +199,63 @@ def format_heartbeat(open_count: int, watched: list[str]) -> Alert:
 
 def format_startup(cfg: Config, version: str) -> Alert:
     pretty = ", ".join(cfg.notifier.pretty_names.get(s, s) for s in cfg.symbols)
-    rules = []
-    s = cfg.signals
-    if s.funding_extreme.enabled:
-        rules.append(
-            f"funding ≥ {s.funding_extreme.long_overheated_above * 100:+.3f}% / "
-            f"≤ {s.funding_extreme.short_overheated_below * 100:+.3f}%"
+    # Per-symbol thresholds: each pair has its own funding/LSR/OI/liq cuts after
+    # PR #8/#9 and they often diverge from the global defaults. Showing the
+    # global block alone is misleading, so render one block per watched symbol.
+    blocks: list[str] = []
+    for sym in cfg.symbols:
+        s = cfg.signals.for_symbol(sym)
+        rules: list[str] = []
+        if s.funding_extreme.enabled:
+            rules.append(
+                f"funding ≥ {s.funding_extreme.long_overheated_above * 100:+.3f}% / "
+                f"≤ {s.funding_extreme.short_overheated_below * 100:+.3f}%"
+            )
+        if s.lsr_extreme.enabled:
+            rules.append(
+                f"top L/S ≥ {s.lsr_extreme.long_heavy_above:.2f} or ≤ "
+                f"{s.lsr_extreme.short_heavy_below:.2f}"
+            )
+        if s.oi_surge.enabled:
+            rules.append(
+                f"OI Δ ≥ {s.oi_surge.pct_change_threshold * 100:.1f}% / "
+                f"{s.oi_surge.window_minutes}min"
+            )
+        if s.liq_cascade.enabled:
+            rules.append(
+                f"one-sided liq ≥ ${s.liq_cascade.usd_threshold / 1e6:.0f}M / "
+                f"{s.liq_cascade.window_minutes}min"
+            )
+        rules_text = "; ".join(rules) if rules else "no rules enabled"
+        blocks.append(f"  • <b>{cfg.notifier.pretty_names.get(sym, sym)}</b>: {rules_text}")
+    rules_block = "\n".join(blocks)
+
+    # Exits: SL/TP are ATR-based when atr_sizing is on (the default). The fixed
+    # stop_loss_pct is only used as a fallback when ATR isn't available, so do
+    # not advertise it as the active behavior.
+    atr = cfg.exits.atr_sizing
+    if atr.enabled:
+        tp_mults = " / ".join(f"{m:g}×ATR" for m in atr.tp_atr_mults)
+        exits_text = (
+            f"<b>Exits:</b> SL {atr.sl_atr_mult:g}×ATR(1h) · "
+            f"TP ladder {tp_mults} (STRONG → last TP {atr.strong_last_tp_mult:g}×ATR) · "
+            f"time stop {cfg.exits.time_stop_minutes}min"
         )
-    if s.oi_surge.enabled:
-        rules.append(
-            f"OI Δ ≥ {s.oi_surge.pct_change_threshold * 100:.1f}% / {s.oi_surge.window_minutes}min"
+        if atr.fallback_to_pct:
+            exits_text += f"\n  <i>fallback when ATR missing: SL {cfg.exits.stop_loss_pct * 100:.2f}%</i>"
+    else:
+        exits_text = (
+            f"<b>Exits:</b> SL {cfg.exits.stop_loss_pct * 100:.2f}% · "
+            f"TP ladder {len(cfg.exits.take_profit_levels)} steps · "
+            f"time stop {cfg.exits.time_stop_minutes}min"
         )
-    if s.lsr_extreme.enabled:
-        rules.append(
-            f"top L/S ≥ {s.lsr_extreme.long_heavy_above:.2f} or ≤ {s.lsr_extreme.short_heavy_below:.2f}"
-        )
-    if s.liq_cascade.enabled:
-        rules.append(
-            f"one-sided liq ≥ ${s.liq_cascade.usd_threshold / 1e6:.0f}M / "
-            f"{s.liq_cascade.window_minutes}min"
-        )
-    rules_block = "\n".join(f"  • {r}" for r in rules) if rules else "  (no rules enabled)"
+
     text = (
         f"🤖 <b>crypto-flow-bot v{version} started</b>\n"
         f"  Watching: {pretty}\n"
         f"  Poll: every {cfg.poll_interval_seconds}s\n"
-        f"\n<b>Signal rules:</b>\n{rules_block}\n"
-        f"\n<b>Exits:</b> SL {cfg.exits.stop_loss_pct * 100:.2f}% · "
-        f"TP ladder {len(cfg.exits.take_profit_levels)} steps · "
-        f"time stop {cfg.exits.time_stop_minutes}min"
+        f"\n<b>Signal rules (per symbol):</b>\n{rules_block}\n"
+        f"\n{exits_text}"
     )
     return Alert(kind="STARTUP", symbol="*", ts=utcnow(), text=text)
 

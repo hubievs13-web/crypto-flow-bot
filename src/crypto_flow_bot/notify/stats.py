@@ -65,10 +65,13 @@ def position_pnl_pct(pos: dict) -> float | None:
     Example: 50% at TP1 (+1.5%) + 50% at SL/BE (0%) → 0.5*0.015 + 0.5*0.0 = 0.0075.
     """
     try:
-        entry = float(pos.get("entry_price"))
+        entry_raw = pos.get("entry_price")
         close = pos.get("close_price")
         direction = pos.get("direction")
-        if not entry or close is None or direction not in ("LONG", "SHORT"):
+        if entry_raw is None or close is None or direction not in ("LONG", "SHORT"):
+            return None
+        entry = float(entry_raw)
+        if not entry:
             return None
         sign = 1.0 if direction == "LONG" else -1.0
         tp_levels = pos.get("tp_levels") or []
@@ -76,8 +79,8 @@ def position_pnl_pct(pos: dict) -> float | None:
         hit_fraction = 0.0
         for lvl in tp_levels:
             if lvl.get("hit"):
-                frac = float(lvl.get("fraction", 0.0))
-                pct = float(lvl.get("pct", 0.0))
+                frac = float(lvl.get("fraction", 0.0) or 0.0)
+                pct = float(lvl.get("pct", 0.0) or 0.0)
                 pnl += frac * pct  # TP profit always counts as +pct (fav_pct)
                 hit_fraction += frac
         remaining = max(0.0, 1.0 - hit_fraction)
