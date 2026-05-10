@@ -115,9 +115,27 @@ class TrailingCfg(BaseModel):
 
 
 class ReasonInvalidationCfg(BaseModel):
+    """Close a position once the original entry thesis has materially cooled.
+
+    Both funding and LSR gates now use a *retracement* rule instead of a fixed
+    absolute band: a position is invalidated once the metric has moved
+    `retrace_pct` of the way back toward neutral (zero for funding, 1.0 for
+    LSR) from the *entry-time* value. This adapts to per-symbol thresholds
+    automatically — with the previous absolute band a position entered at
+    funding=+0.003% would re-invalidate within seconds because |funding| was
+    already inside the 0.02% normalization band at entry.
+
+    Setting `funding_normalized_retrace_pct: 0.5` means: if entry funding
+    was +0.010%, invalidate once funding drops to +0.005% or below (or flips
+    sign entirely). 0.0 disables the gate; 1.0 requires a full return to zero.
+    """
+
     enabled: bool = True
-    funding_normalized_below_abs: float = 0.0002
-    lsr_normalized_band: tuple[float, float] = (0.85, 1.15)
+
+    # Fractional retracement back toward neutral required to invalidate.
+    funding_normalized_retrace_pct: float = 0.5
+    lsr_normalized_retrace_pct: float = 0.5
+
     # For point-in-time triggers (oi_surge, liq_cascade) there's no "metric
     # back to normal" gate — but we can still bail out at break-even if the
     # price has clearly reversed against the trade in the first window

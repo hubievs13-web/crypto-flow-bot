@@ -9,7 +9,12 @@ def _cfg() -> Config:
     return Config(symbols=["BTCUSDT"])
 
 
-def _long_position(entry: float = 100.0, age_minutes: float = 0.0, reason: str = "funding_extreme") -> Position:
+def _long_position(
+    entry: float = 100.0,
+    age_minutes: float = 0.0,
+    reason: str = "funding_extreme",
+    metrics_at_entry: dict | None = None,
+) -> Position:
     cfg = _cfg()
     sl = entry * (1 - cfg.exits.stop_loss_pct)
     return Position(
@@ -19,13 +24,19 @@ def _long_position(entry: float = 100.0, age_minutes: float = 0.0, reason: str =
         entry_price=entry,
         entry_ts=datetime.now(tz=UTC) - timedelta(minutes=age_minutes),
         reason=reason,
+        reason_metric_at_entry=metrics_at_entry or {},
         stop_loss_price=sl,
         initial_stop_loss_price=sl,
         tp_levels=[TpLevelState(pct=lvl.pct, fraction=lvl.fraction) for lvl in cfg.exits.take_profit_levels],
     )
 
 
-def _short_position(entry: float = 100.0, age_minutes: float = 0.0, reason: str = "funding_extreme") -> Position:
+def _short_position(
+    entry: float = 100.0,
+    age_minutes: float = 0.0,
+    reason: str = "funding_extreme",
+    metrics_at_entry: dict | None = None,
+) -> Position:
     cfg = _cfg()
     sl = entry * (1 + cfg.exits.stop_loss_pct)
     return Position(
@@ -35,6 +46,7 @@ def _short_position(entry: float = 100.0, age_minutes: float = 0.0, reason: str 
         entry_price=entry,
         entry_ts=datetime.now(tz=UTC) - timedelta(minutes=age_minutes),
         reason=reason,
+        reason_metric_at_entry=metrics_at_entry or {},
         stop_loss_price=sl,
         initial_stop_loss_price=sl,
         tp_levels=[TpLevelState(pct=lvl.pct, fraction=lvl.fraction) for lvl in cfg.exits.take_profit_levels],
@@ -98,11 +110,107 @@ def test_time_stop_after_configured_minutes():
     assert any(e.kind == "TIME_STOP" for e in events)
 
 
-def test_reason_invalidation_on_funding_normalization():
+def test_reason_invalidation_on_funding_retracement():
+    """Entry funding +0.01%, current +0.004% -> 60% retraced (>50% default)."""
     cfg = _cfg()
-    pos = _short_position(entry=100.0, reason="funding_extreme")
+    pos = _short_position(
+        entry=100.0,
+        reason="funding_extreme",
+        metrics_at_entry={"funding_rate": 0.0001},  # +0.010%
+    )
     snap = Snapshot(
-        symbol="BTCUSDT", ts=datetime.now(tz=UTC), price=99.9, funding_rate=0.00005
+        symbol="BTCUSDT", ts=datetime.now(tz=UTC), price=99.9, funding_rate=0.00004
+    )
+    events = evaluate_exit(pos, snap, cfg)
+    assert any(e.kind == "REASON_INVALIDATED" for e in events)
+
+
+def test_funding_reason_does_not_invalidate_at_entry_value():
+    """Regression: funding gates used to fire immediately because the
+    normalization threshold was wider than per-symbol entry triggers. Under
+    retrace_pct semantics, an entry at +0.010% must NOT invalidate while
+    funding is still at +0.010%."""
+    cfg = _cfg()
+    pos = _short_position(
+        entry=100.0,
+        reason="funding_extreme",
+        metrics_at_entry={"funding_rate": 0.0001},
+    )
+    snap = Snapshot(
+        symbol="BTCUSDT", ts=datetime.now(tz=UTC), price=99.9, funding_rate=0.0001
+    )
+    events = evaluate_exit(pos, snap, cfg)
+    assert not any(e.kind == "REASON_INVALIDATED" for e in events)
+
+
+def test_funding_reason_invalidates_on_sign_flip():
+    """A flip from +0.010% to -0.001% counts as over-retraced -> close."""
+    cfg = _cfg()
+    pos = _short_position(
+        entry=100.0,
+        reason="funding_extreme",
+        metrics_at_entry={"funding_rate": 0.0001},
+    )
+    snap = Snapshot(
+        symbol="BTCUSDT", ts=datetime.now(tz=UTC), price=99.9, funding_rate=-0.00001
+    )
+    events = evaluate_exit(pos, snap, cfg)
+    assert any(e.kind == "REASON_INVALIDATED" for e in events)
+
+
+def test_funding_reason_no_invalidation_without_entry_metric():
+    """Backward compat for old positions reloaded from state without the
+    reason_metric_at_entry payload — the gate must simply skip rather than
+    raise or false-fire."""
+    cfg = _cfg()
+    pos = _short_position(entry=100.0, reason="funding_extreme")  # no metrics
+    snap = Snapshot(
+        symbol="BTCUSDT", ts=datetime.now(tz=UTC), price=99.9, funding_rate=0.00001
+    )
+    events = evaluate_exit(pos, snap, cfg)
+    assert not any(e.kind == "REASON_INVALIDATED" for e in events)
+
+
+def test_lsr_reason_invalidation_on_retracement():
+    """Entry LSR 2.5 (SHORT entry), current 1.5 -> ~67% retraced toward 1.0."""
+    cfg = _cfg()
+    pos = _short_position(
+        entry=100.0,
+        reason="lsr_extreme",
+        metrics_at_entry={"long_short_ratio": 2.5},
+    )
+    snap = Snapshot(
+        symbol="BTCUSDT", ts=datetime.now(tz=UTC), price=99.9, long_short_ratio=1.5
+    )
+    events = evaluate_exit(pos, snap, cfg)
+    assert any(e.kind == "REASON_INVALIDATED" for e in events)
+
+
+def test_lsr_reason_does_not_invalidate_near_entry():
+    """Entry LSR 2.5, current 2.4 -> only 7% retraced -> must NOT invalidate."""
+    cfg = _cfg()
+    pos = _short_position(
+        entry=100.0,
+        reason="lsr_extreme",
+        metrics_at_entry={"long_short_ratio": 2.5},
+    )
+    snap = Snapshot(
+        symbol="BTCUSDT", ts=datetime.now(tz=UTC), price=99.9, long_short_ratio=2.4
+    )
+    events = evaluate_exit(pos, snap, cfg)
+    assert not any(e.kind == "REASON_INVALIDATED" for e in events)
+
+
+def test_lsr_long_reason_invalidation_symmetry():
+    """LONG entry at LSR 0.65, current 0.85 -> ~57% retraced toward 1.0."""
+    cfg = _cfg()
+    pos = _long_position(
+        entry=100.0,
+        reason="lsr_extreme",
+        metrics_at_entry={"long_short_ratio": 0.65},
+    )
+    snap = Snapshot(
+        symbol="BTCUSDT", ts=datetime.now(tz=UTC), price=100.1, long_short_ratio=0.85
     )
     events = evaluate_exit(pos, snap, cfg)
     assert any(e.kind == "REASON_INVALIDATED" for e in events)

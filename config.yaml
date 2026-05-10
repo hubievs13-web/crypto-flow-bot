@@ -185,14 +185,21 @@ exits:
 
   # Reason-invalidation: close (near break-even) when the original entry thesis
   # has clearly broken.
-  #   - funding_extreme → close once |funding| is back below normalized band
-  #   - lsr_extreme     → close once L/S ratio is back inside normalized band
+  #   - funding_extreme → close once funding has retraced retrace_pct of the
+  #                       way back toward zero from the entry-time value
+  #                       (sign flips count as over-retraced)
+  #   - lsr_extreme     → same idea, retracement toward neutral 1.0
   #   - oi_surge / liq_cascade → no metric to gate on, so we use a momentum
   #     check: if price has reversed against entry within window, bail early
+  #
+  # The previous absolute-band design was buggy: per-symbol funding triggers
+  # like +0.003% are smaller than a 0.02% normalized band, so funding-entry
+  # positions invalidated within the first exit-cycle every time. The
+  # retrace-pct rule adapts to whatever per-symbol triggers we use.
   reason_invalidation:
     enabled: true
-    funding_normalized_below_abs: 0.0002      # |funding| < 0.02% counts as normalized
-    lsr_normalized_band: [0.85, 1.15]          # L/S back inside this band counts as normalized
+    funding_normalized_retrace_pct: 0.5        # invalidate after funding retraces 50% to zero
+    lsr_normalized_retrace_pct: 0.5            # invalidate after LSR retraces 50% to neutral 1.0
     momentum_reversal_pct: 0.005               # 0.5% reverse against entry triggers early exit
     momentum_window_minutes: 60                # ...only within first 60 minutes after entry
 
