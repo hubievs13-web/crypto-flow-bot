@@ -170,7 +170,7 @@ class ExitsCfg(BaseModel):
         default_factory=lambda: [TpLevel(pct=0.015, fraction=0.5), TpLevel(pct=0.030, fraction=0.5)]
     )
     trailing: TrailingCfg = Field(default_factory=TrailingCfg)
-    time_stop_minutes: int = 240
+    time_stop_minutes: int = 480
     reason_invalidation: ReasonInvalidationCfg = Field(default_factory=ReasonInvalidationCfg)
     atr_sizing: AtrSizingCfg = Field(default_factory=AtrSizingCfg)
 
