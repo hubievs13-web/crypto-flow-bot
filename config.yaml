@@ -238,6 +238,17 @@ stats:
   hour_utc: 12     # send at 12:00 UTC every Monday
   window_days: 7   # rolling window of positions to summarize
 
+  # Per-fill fee + slippage subtracted from realized PnL when computing the
+  # digest. Defaults model Binance USD-M futures *taker*: 0.05% commission
+  # plus a conservative 0.02% slippage estimate per fill. Each closed
+  # position pays exactly two fills' worth (entry + exit), so the round-trip
+  # subtracted is 2 × (commission + slippage) = 0.14% per position by default.
+  # Set `enabled: false` to revert to the previous gross-PnL math.
+  fees:
+    enabled: true
+    commission_per_fill: 0.0005   # 0.05% per fill (5 bps)
+    slippage_per_fill: 0.0002     # 0.02% per fill (2 bps)
+
 
 # ─── Risk management ───────────────────────────────────────────────────────
 # Two top-level guards applied *before* opening any new position. Independent

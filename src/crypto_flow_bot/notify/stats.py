@@ -18,8 +18,26 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from crypto_flow_bot.config import FeesCfg
 
 log = logging.getLogger(__name__)
+
+
+def _round_trip_cost(fees: FeesCfg | None) -> float:
+    """Total fee+slippage cost for a fully-closed position, expressed as a
+    unit fraction of notional.
+
+    Each closed position has exactly two "full" fills' worth of cost: one on
+    entry and one on exit (the exit is split across TP fills + the final
+    close, but the *sum* of exit fractions is always 1.0). So the
+    round-trip cost is simply 2 × per-fill.
+    """
+    if fees is None or not fees.enabled:
+        return 0.0
+    return 2.0 * (fees.commission_per_fill + fees.slippage_per_fill)
 
 
 @dataclass
@@ -55,7 +73,7 @@ class SignalStats:
         return (self.total_pnl_pct / c * 100.0) if c else 0.0
 
 
-def position_pnl_pct(pos: dict) -> float | None:
+def position_pnl_pct(pos: dict, *, fees: FeesCfg | None = None) -> float | None:
     """Weighted realized PnL on a closed position as a unit fraction (0.01 = +1%).
 
     For each TP level that was hit, we credit `fraction * pct` profit. The
@@ -63,6 +81,11 @@ def position_pnl_pct(pos: dict) -> float | None:
     move. Returns None when fields are missing/malformed.
 
     Example: 50% at TP1 (+1.5%) + 50% at SL/BE (0%) → 0.5*0.015 + 0.5*0.0 = 0.0075.
+
+    When `fees` is provided and enabled, subtract `2 × (commission + slippage)`
+    from the gross PnL: every closed position has one entry fill and one
+    exit's worth of fills (TP fractions + final close = 1.0), so the total
+    notional turned over is always 2.0.
     """
     try:
         entry_raw = pos.get("entry_price")
@@ -87,7 +110,7 @@ def position_pnl_pct(pos: dict) -> float | None:
         if remaining > 0:
             move = (float(close) - entry) / entry * sign
             pnl += remaining * move
-        return pnl
+        return pnl - _round_trip_cost(fees)
     except (TypeError, ValueError, ZeroDivisionError):
         return None
 
@@ -116,8 +139,15 @@ def compute_stats(
     positions: list[dict],
     now: datetime,
     window_days: int,
+    *,
+    fees: FeesCfg | None = None,
 ) -> dict[str, SignalStats]:
-    """Group positions by entry signal type, count outcomes within the window."""
+    """Group positions by entry signal type, count outcomes within the window.
+
+    If `fees` is provided and enabled, the per-position PnL aggregated into
+    `total_pnl_pct` is **net** of commission and slippage; otherwise it stays
+    gross (the historical behavior).
+    """
     cutoff = now - timedelta(days=window_days)
     grouped: dict[str, list[dict]] = defaultdict(list)
     for pos in positions:
@@ -161,7 +191,7 @@ def compute_stats(
             elif close_reason == "REASON_INVALIDATED":
                 s.invalidated += 1
 
-            pnl = position_pnl_pct(p)
+            pnl = position_pnl_pct(p, fees=fees)
             if pnl is not None:
                 s.total_pnl_pct += pnl
         out[name] = s
@@ -191,8 +221,14 @@ def compute_symbol_stats(
     positions: list[dict],
     now: datetime,
     window_days: int,
+    *,
+    fees: FeesCfg | None = None,
 ) -> dict[str, SymbolStats]:
-    """Group positions by symbol; same window/PnL logic as compute_stats."""
+    """Group positions by symbol; same window/PnL logic as compute_stats.
+
+    `fees` is forwarded to `position_pnl_pct` so per-symbol PnL is also net
+    when enabled.
+    """
     cutoff = now - timedelta(days=window_days)
     out: dict[str, SymbolStats] = {}
     for pos in positions:
@@ -213,7 +249,7 @@ def compute_symbol_stats(
         tp_levels = pos.get("tp_levels") or []
         if tp_levels and tp_levels[0].get("hit"):
             s.tp1_hit += 1
-        pnl = position_pnl_pct(pos)
+        pnl = position_pnl_pct(pos, fees=fees)
         if pnl is not None:
             s.total_pnl_pct += pnl
     return out
@@ -225,6 +261,7 @@ def format_stats_digest(
     *,
     total_positions: int | None = None,
     per_symbol: dict[str, SymbolStats] | None = None,
+    fees: FeesCfg | None = None,
 ) -> str:
     """Render a Telegram-friendly HTML digest. Empty-stats path is handled."""
     header = f"📊 <b>Stats — last {window_days} days</b>"
@@ -263,10 +300,19 @@ def format_stats_digest(
             lines.append(line)
         lines.append("")
 
+    if fees is not None and fees.enabled:
+        round_trip_bps = (fees.commission_per_fill + fees.slippage_per_fill) * 2 * 10_000
+        fees_note = (
+            f"PnL is <b>net</b> of fees: {fees.commission_per_fill * 10_000:.0f}bps "
+            f"commission + {fees.slippage_per_fill * 10_000:.0f}bps slippage per fill "
+            f"= {round_trip_bps:.0f}bps round-trip subtracted per position."
+        )
+    else:
+        fees_note = "Fees not included."
     lines.append(
         "<i>PnL is weighted across partial TP fills and the final close (e.g. "
         "50% at TP1 + 50% at BE shows as +0.75%, not 0%). Win-rate = positions "
-        "that hit TP1 at least once. Fees not included.</i>"
+        f"that hit TP1 at least once. {fees_note}</i>"
     )
     return "\n".join(lines).rstrip()
 

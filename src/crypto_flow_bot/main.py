@@ -237,8 +237,12 @@ class Bot:
                 continue
             try:
                 positions = read_latest_positions(self.logger.positions_path)
-                stats = compute_stats(positions, now=now, window_days=cfg.window_days)
-                per_symbol = compute_symbol_stats(positions, now=now, window_days=cfg.window_days)
+                stats = compute_stats(
+                    positions, now=now, window_days=cfg.window_days, fees=cfg.fees,
+                )
+                per_symbol = compute_symbol_stats(
+                    positions, now=now, window_days=cfg.window_days, fees=cfg.fees,
+                )
                 # Count unique positions in window for the header.
                 cutoff = now - timedelta(days=cfg.window_days)
                 total_unique = sum(
@@ -252,6 +256,7 @@ class Bot:
                     window_days=cfg.window_days,
                     total_positions=total_unique,
                     per_symbol=per_symbol,
+                    fees=cfg.fees,
                 )
                 await self.notifier.send(text)
             except Exception as e:

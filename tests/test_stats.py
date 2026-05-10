@@ -2,11 +2,14 @@
 
 from datetime import UTC, datetime, timedelta
 
+from crypto_flow_bot.config import FeesCfg
 from crypto_flow_bot.notify.stats import (
     SignalStats,
     compute_stats,
+    compute_symbol_stats,
     format_stats_digest,
     is_past_weekly_send_time,
+    position_pnl_pct,
     read_latest_positions,
 )
 
@@ -114,6 +117,114 @@ def test_compute_stats_pnl_long_vs_short_sign():
     assert abs(out["funding_extreme"].avg_pnl_pct) < 1e-6
 
 
+def test_position_pnl_subtracts_round_trip_fees_when_enabled():
+    """A simple TP1+BE position is +0.75% gross. With default fees
+    (5bps commission + 2bps slippage per fill = 14bps round-trip), the
+    net should be 0.75% - 0.14% = +0.61%."""
+    now = datetime.now(tz=UTC)
+    pos = _pos(
+        "a", reason="funding_extreme", direction="LONG",
+        entry_ts=now - timedelta(hours=1),
+        entry_price=100.0, close_price=100.0,  # remaining 50% closed at BE
+        close_reason="REASON_INVALIDATED",
+        tp_levels=[
+            {"pct": 0.015, "fraction": 0.5, "hit": True},   # +1.5% on 50%
+            {"pct": 0.030, "fraction": 0.5, "hit": False},
+        ],
+    )
+    gross = position_pnl_pct(pos)
+    net = position_pnl_pct(pos, fees=FeesCfg())
+    assert gross is not None and net is not None
+    assert abs(gross - 0.0075) < 1e-9
+    assert abs(net - (0.0075 - 0.0014)) < 1e-9
+
+
+def test_position_pnl_unchanged_when_fees_disabled():
+    now = datetime.now(tz=UTC)
+    pos = _pos(
+        "a", reason="funding_extreme", direction="LONG",
+        entry_ts=now - timedelta(hours=1),
+        entry_price=100.0, close_price=101.5, close_reason="TP_HIT",
+        tp_levels=[
+            {"pct": 0.015, "fraction": 1.0, "hit": True},
+        ],
+    )
+    gross = position_pnl_pct(pos)
+    net_off = position_pnl_pct(pos, fees=FeesCfg(enabled=False))
+    assert gross == net_off
+
+
+def test_position_pnl_round_trip_constant_for_full_sl():
+    """Full SL with no TP fills must still subtract one full round-trip's fees."""
+    now = datetime.now(tz=UTC)
+    pos = _pos(
+        "a", reason="funding_extreme", direction="LONG",
+        entry_ts=now - timedelta(hours=1),
+        entry_price=100.0, close_price=98.5, close_reason="SL_HIT",
+        tp_levels=[
+            {"pct": 0.015, "fraction": 0.5, "hit": False},
+            {"pct": 0.030, "fraction": 0.5, "hit": False},
+        ],
+    )
+    gross = position_pnl_pct(pos)
+    net = position_pnl_pct(pos, fees=FeesCfg())
+    assert gross is not None and net is not None
+    # gross = -1.5% (full size at entry → 98.5)
+    assert abs(gross - (-0.015)) < 1e-9
+    # net = gross - 0.14%
+    assert abs(net - (-0.015 - 0.0014)) < 1e-9
+
+
+def test_compute_stats_aggregates_net_pnl_when_fees_provided():
+    now = datetime.now(tz=UTC)
+    positions = [
+        _pos("a", reason="funding_extreme", entry_ts=now - timedelta(hours=1),
+             entry_price=100.0, close_price=101.5, close_reason="TP_HIT",
+             tp_levels=[{"pct": 0.015, "fraction": 1.0, "hit": True}]),
+        _pos("b", reason="funding_extreme", entry_ts=now - timedelta(hours=2),
+             entry_price=100.0, close_price=98.5, close_reason="SL_HIT"),
+    ]
+    fees = FeesCfg()  # 14 bps round-trip
+    out_gross = compute_stats(positions, now=now, window_days=7)
+    out_net = compute_stats(positions, now=now, window_days=7, fees=fees)
+    # gross: +1.5% + (-1.5%) = 0.0; net: each loses 0.14% → -0.28%
+    assert abs(out_gross["funding_extreme"].total_pnl_pct) < 1e-9
+    assert abs(out_net["funding_extreme"].total_pnl_pct - (-0.0028)) < 1e-9
+
+
+def test_compute_symbol_stats_threads_fees():
+    now = datetime.now(tz=UTC)
+    positions = [
+        _pos("a", reason="funding_extreme", entry_ts=now - timedelta(hours=1),
+             entry_price=100.0, close_price=101.5, close_reason="TP_HIT",
+             tp_levels=[{"pct": 0.015, "fraction": 1.0, "hit": True}]),
+    ]
+    out_net = compute_symbol_stats(positions, now=now, window_days=7, fees=FeesCfg())
+    # gross +1.5% → net 1.5% - 0.14% = +1.36%
+    assert abs(out_net["BTCUSDT"].total_pnl_pct - 0.0136) < 1e-9
+
+
+def test_format_digest_mentions_fees_when_enabled():
+    s = SignalStats(name="funding_extreme", count=1, tp1_hit=1)
+    s.total_pnl_pct = 0.01
+    text = format_stats_digest(
+        {"funding_extreme": s}, window_days=7, total_positions=1, fees=FeesCfg(),
+    )
+    assert "net</b> of fees" in text
+    assert "5bps commission" in text
+    assert "14bps round-trip" in text
+
+
+def test_format_digest_keeps_old_footer_when_fees_disabled():
+    s = SignalStats(name="funding_extreme", count=1, tp1_hit=1)
+    s.total_pnl_pct = 0.01
+    text = format_stats_digest(
+        {"funding_extreme": s}, window_days=7, total_positions=1,
+        fees=FeesCfg(enabled=False),
+    )
+    assert "Fees not included" in text
+
+
 def test_format_digest_empty_message():
     text = format_stats_digest({}, window_days=7)
     assert "No signals fired" in text
@@ -190,7 +301,7 @@ def test_digest_gate_handles_sunday_target():
 
 # ─── Weighted PnL across partial closes (item #8) ──────────────────────────
 
-from crypto_flow_bot.notify.stats import SymbolStats, compute_symbol_stats, position_pnl_pct  # noqa: E402
+from crypto_flow_bot.notify.stats import SymbolStats  # noqa: E402
 
 
 def test_position_pnl_weighted_50_tp1_50_be():
