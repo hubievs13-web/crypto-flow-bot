@@ -28,6 +28,34 @@ def _favorable_pct(position: Position, price: float) -> float:
     return raw * position.direction.sign
 
 
+def _metric_retraced_to_neutral(
+    *,
+    entry_value: float | None,
+    current_value: float,
+    neutral: float,
+    retrace_pct: float,
+) -> bool:
+    """True if `current_value` has moved at least `retrace_pct` of the way
+    from `entry_value` back toward `neutral`.
+
+    Used by reason-invalidation for funding (neutral=0.0) and LSR
+    (neutral=1.0). A position entered at funding=+0.010% with retrace_pct=0.5
+    invalidates once funding has dropped to +0.005% or below — including
+    sign flips, which count as over-retraced.
+
+    Returns False when no entry value was recorded (older positions loaded
+    from state), when retrace_pct is non-positive, or when the entry value
+    is already at neutral (nothing to retrace from).
+    """
+    if entry_value is None or retrace_pct <= 0:
+        return False
+    distance = entry_value - neutral
+    if abs(distance) < 1e-12:
+        return True
+    progress_remaining = (current_value - neutral) / distance
+    return progress_remaining <= 1.0 - retrace_pct
+
+
 def _trailing_stop_price(position: Position, lock_in_pct: float) -> float:
     """Compute the new SL price when trailing is engaged."""
     sign = position.direction.sign
@@ -107,18 +135,32 @@ def evaluate_exit(position: Position, snap: Snapshot, cfg: Config) -> list[ExitE
     if ri.enabled:
         invalidated = False
         why = ""
-        if (
-            "funding_extreme" in position.reason
-            and snap.funding_rate is not None
-            and abs(snap.funding_rate) <= ri.funding_normalized_below_abs
-        ):
-            invalidated = True
-            why = f"funding back to {snap.funding_rate * 100:+.3f}% (normalized)"
-        if not invalidated and "lsr_extreme" in position.reason and snap.long_short_ratio is not None:
-            lo, hi = ri.lsr_normalized_band
-            if lo <= snap.long_short_ratio <= hi:
+        if "funding_extreme" in position.reason and snap.funding_rate is not None:
+            entry_f = position.reason_metric_at_entry.get("funding_rate")
+            if _metric_retraced_to_neutral(
+                entry_value=entry_f,
+                current_value=snap.funding_rate,
+                neutral=0.0,
+                retrace_pct=ri.funding_normalized_retrace_pct,
+            ):
                 invalidated = True
-                why = f"L/S ratio back to {snap.long_short_ratio:.2f} (in normal band {lo}-{hi})"
+                why = f"funding {snap.funding_rate * 100:+.3f}% retraced from {entry_f * 100:+.3f}%"
+        if (
+            not invalidated
+            and "lsr_extreme" in position.reason
+            and snap.long_short_ratio is not None
+        ):
+            entry_lsr = position.reason_metric_at_entry.get("long_short_ratio")
+            if _metric_retraced_to_neutral(
+                entry_value=entry_lsr,
+                current_value=snap.long_short_ratio,
+                neutral=1.0,
+                retrace_pct=ri.lsr_normalized_retrace_pct,
+            ):
+                invalidated = True
+                why = (
+                    f"L/S {snap.long_short_ratio:.2f} retraced from {entry_lsr:.2f} toward 1.00"
+                )
         # Momentum-reversal gate for point-in-time triggers (oi_surge, liq_cascade).
         # Idea: these signals have no "metric normalized" gate, so if price has
         # clearly turned against entry within the first window minutes, the
