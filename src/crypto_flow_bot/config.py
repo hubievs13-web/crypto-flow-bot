@@ -200,6 +200,24 @@ class NotifierCfg(BaseModel):
     command_poll_interval_seconds: int = 5
 
 
+class FeesCfg(BaseModel):
+    """Per-fill cost model applied when computing realized PnL in the digest.
+
+    A position incurs one fill on entry plus one fill per partial close (each
+    TP level that hit + the final close on the remaining size), summing to two
+    "full" fills' worth of cost. Both numbers below are unit fractions of
+    notional (0.0005 = 0.05% = 5 bps).
+
+    Defaults model Binance USD-M futures *taker* (0.05% commission) plus a
+    conservative slippage estimate of ~2 bps per fill. Set `enabled: false` to
+    revert to the previous fee-free PnL math.
+    """
+
+    enabled: bool = True
+    commission_per_fill: float = 0.0005   # 0.05% per fill (taker on Binance USD-M)
+    slippage_per_fill: float = 0.0002     # 0.02% adverse fill, conservative
+
+
 class StatsCfg(BaseModel):
     """Weekly stats digest. Sends a summary of the last `window_days` of signals
     every week at the configured weekday/hour (UTC)."""
@@ -208,6 +226,7 @@ class StatsCfg(BaseModel):
     weekday: int = 0       # 0=Mon, 1=Tue, ..., 6=Sun
     hour_utc: int = 12     # send at this hour (UTC)
     window_days: int = 7   # rolling window of positions to summarize
+    fees: FeesCfg = Field(default_factory=FeesCfg)
 
 
 class Config(BaseModel):
