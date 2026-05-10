@@ -181,7 +181,11 @@ exits:
     lock_in_pct: 0.005     # lock in at least +0.5% — if reaches +1.5% then reverses, you exit at +0.5%
 
   # Time stop: close the position after this long if no other exit fired.
-  time_stop_minutes: 240   # 4 hours
+  # 8h aligns with Binance funding cycles, the source of our mean-reversion
+  # signal -- below this, exits routinely cut winners before the funding edge
+  # has had time to play out. See QC backtest variants BASELINE/D/B (commit
+  # message of this change for numbers).
+  time_stop_minutes: 480   # 8 hours
 
   # Reason-invalidation: close (near break-even) when the original entry thesis
   # has clearly broken.
