@@ -45,6 +45,14 @@ def _setup_logging() -> None:
         level=level,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+    # httpx's default INFO logger emits every request URL ("HTTP Request: GET
+    # https://api.telegram.org/bot<TOKEN>/getUpdates?... 200 OK"). The Telegram
+    # bot token is part of the URL path, so every getUpdates poll (every 5s by
+    # default) leaks the token into stdout — and on Fly.io into the public log
+    # stream readable by anyone with the deploy token. Cap httpx at WARNING so
+    # only failures surface. Network errors already produce app-level warnings
+    # via `notify.telegram` / `data.binance`.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 def _read_env() -> tuple[str, list[str]]:
