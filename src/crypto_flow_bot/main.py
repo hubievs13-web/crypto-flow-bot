@@ -17,7 +17,7 @@ from crypto_flow_bot.config import Config, load_config
 from crypto_flow_bot.data.binance import BinanceClient, build_snapshot
 from crypto_flow_bot.data.liquidations import LiquidationStream
 from crypto_flow_bot.engine.exits import evaluate_exit
-from crypto_flow_bot.engine.models import Snapshot
+from crypto_flow_bot.engine.models import Direction, Snapshot
 from crypto_flow_bot.engine.signals import evaluate
 from crypto_flow_bot.engine.state import StateStore
 from crypto_flow_bot.log.store import JsonlLogger
@@ -88,6 +88,10 @@ class Bot:
         # exit-loop so reason_invalidation can see funding/LSR/OI without
         # re-fetching them every few seconds. Updated by `_poll_loop`.
         self._last_full_snapshot: dict[str, Snapshot] = {}
+        # Serializes _handle_entry_signals so the slow `_poll_loop` and the
+        # fast `_liq_fast_loop` cannot both pass the cooldown check on the
+        # same (symbol, direction) and double-fire an alert.
+        self._entry_lock = asyncio.Lock()
 
     def request_stop(self) -> None:
         self._stop.set()
@@ -98,6 +102,7 @@ class Bot:
             await asyncio.gather(
                 self._poll_loop(),
                 self._exit_loop(),
+                self._liq_fast_loop(),
                 self._heartbeat_loop(),
                 self._commands_loop(),
                 self._stats_digest_loop(),
@@ -128,6 +133,69 @@ class Bot:
                 await self.logger.write_snapshot(snap)
                 await self._handle_entry_signals(snap)
             await self._sleep(self.cfg.poll_interval_seconds)
+
+    async def _liq_fast_loop(self) -> None:
+        """Real-time liquidation-cascade detector.
+
+        The main `_poll_loop` runs every `poll_interval_seconds` (60s by
+        default). For funding / OI / LSR that is fine — those metrics refresh
+        on Binance every 5min-8h. Liquidations, however, stream in real-time
+        via the WS aggregator (`LiquidationStream`), so the 60s gate added up
+        to 0-60s of artificial detection lag for the highest-velocity signal
+        type.
+
+        This loop reads the aggregator's in-memory rolling window every
+        `liq_fast_check_interval_seconds` (5s default) — that part is a
+        pure dict lookup, no network. When the rolling total for a symbol
+        crosses the per-symbol `liq_cascade.usd_threshold` for at least one
+        direction that is not already on cooldown, we do exactly the same
+        `build_snapshot` + `_handle_entry_signals` that `_poll_loop` does,
+        immediately. After a real fire, `mark_alerted` engages the
+        `alert_cooldown_seconds` cooldown, which short-circuits subsequent
+        iterations until the rolling window decays or cooldown expires.
+        """
+        while not self._stop.is_set():
+            for symbol in self.cfg.symbols:
+                sig = self.cfg.signals.for_symbol(symbol)
+                if not sig.liq_cascade.enabled:
+                    continue
+                long_liq, short_liq = self.liq_stream.totals(symbol)
+                thr = sig.liq_cascade.usd_threshold
+                # Mirror engine.signals.evaluate: a long-side flush triggers
+                # a LONG candidate (bounce), short-side a SHORT (squeeze).
+                crossed: list[Direction] = []
+                if long_liq >= thr:
+                    crossed.append(Direction.LONG)
+                if short_liq >= thr:
+                    crossed.append(Direction.SHORT)
+                if not crossed:
+                    continue
+                # Skip the snapshot fetch if every crossed direction is
+                # already on cooldown — the entry handler would just
+                # discard the candidate anyway, and `build_snapshot` is a
+                # ~250ms REST roundtrip we don't want to repeat every 5s
+                # while the 2h cooldown is ticking down.
+                if all(
+                    self.state.cooldown_remaining_seconds(
+                        symbol, d, self.cfg.alert_cooldown_seconds
+                    ) > 0
+                    for d in crossed
+                ):
+                    continue
+                try:
+                    snap = await build_snapshot(
+                        self.client,
+                        self.liq_stream,
+                        symbol,
+                        oi_window_minutes=sig.oi_surge.window_minutes,
+                    )
+                except Exception as e:
+                    log.warning("liq fast-path snapshot for %s failed: %s", symbol, e)
+                    continue
+                self._last_full_snapshot[symbol] = snap
+                await self.logger.write_snapshot(snap)
+                await self._handle_entry_signals(snap)
+            await self._sleep(self.cfg.liq_fast_check_interval_seconds)
 
     async def _exit_loop(self) -> None:
         # Fetch a fresh price each cycle (cheap REST call) and combine it with
@@ -276,6 +344,10 @@ class Bot:
     # ---------- entry / exit handling ----------
 
     async def _handle_entry_signals(self, snap: Snapshot) -> None:
+        async with self._entry_lock:
+            await self._handle_entry_signals_locked(snap)
+
+    async def _handle_entry_signals_locked(self, snap: Snapshot) -> None:
         candidates = evaluate(snap, self.cfg)
         # Conflict policy: if rules fired in *both* directions on the same
         # snapshot, skip the whole symbol this tick. The OR-logic means the
