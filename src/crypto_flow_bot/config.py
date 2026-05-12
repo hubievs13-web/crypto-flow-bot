@@ -251,6 +251,15 @@ class Config(BaseModel):
     symbols: list[str]
     poll_interval_seconds: int = 60
     exit_check_interval_seconds: int = 5
+    # Real-time liquidation-cascade detector cadence. The main poll cycle
+    # runs every `poll_interval_seconds` (60s) and is fine for funding /
+    # open-interest / LSR data (those metrics only refresh every 5min-8h
+    # upstream). Liquidations, however, stream in real-time over the WS
+    # aggregator. To shorten the gap between a real cascade and the alert,
+    # a dedicated short-interval loop polls the aggregator's in-memory
+    # window every `liq_fast_check_interval_seconds` and fast-paths a
+    # snapshot + alert when the per-symbol usd_threshold is crossed.
+    liq_fast_check_interval_seconds: int = 5
     alert_cooldown_seconds: int = 1800
     signals: SignalsCfg = Field(default_factory=SignalsCfg)
     exits: ExitsCfg = Field(default_factory=ExitsCfg)

@@ -1,5 +1,6 @@
 """Integration tests for the entry-side risk gate (max_concurrent + max_daily_losses)."""
 
+import asyncio
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 
@@ -30,8 +31,9 @@ def _bot(tmp_path, cfg: Config) -> Bot:
     bot.logger.write_alert = AsyncMock()
     bot.logger.write_position = AsyncMock()
     # Bot.__new__ skips __init__, so wire up the snapshot cache used by
-    # `_build_exit_snapshot`.
+    # `_build_exit_snapshot` and the lock used by `_handle_entry_signals`.
     bot._last_full_snapshot = {}
+    bot._entry_lock = asyncio.Lock()
     return bot
 
 
