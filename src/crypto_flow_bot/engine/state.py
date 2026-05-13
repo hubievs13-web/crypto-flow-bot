@@ -1,4 +1,5 @@
-"""Persistent state: open virtual positions + last alert times.
+"""Persistent state: open virtual positions + last alert times + post-exit
+cooldowns + in-memory log dedup.
 
 State is stored as a single JSON file. This is enough for our scale (a few
 symbols, a few open positions at a time) and is easy to inspect/edit by hand.
@@ -33,13 +34,18 @@ class StateStore:
         self.path = d / "state.json"
         self.positions: dict[str, Position] = {}
         self.last_alert_ts: dict[tuple[str, Direction], datetime] = {}
+        # Last fully-closed virtual position timestamp per (symbol, direction).
+        # Used by the post-exit cooldown gate so we don't immediately re-enter
+        # on the same side when a position has just closed.
+        self.last_close_ts: dict[tuple[str, Direction], datetime] = {}
         # ISO-week key (e.g. "2025-W18") of the last weekly stats digest sent.
         self.last_stats_digest_week: str | None = None
         # ISO date (YYYY-MM-DD UTC) of the last daily-liveness ping sent.
         self.last_liveness_ping_date: str | None = None
-        # Daily SL_HIT counter (resets at UTC midnight) for the loss circuit breaker.
-        self.losses_today_date: str | None = None
-        self.losses_today_count: int = 0
+        # In-memory dedup for chatty INFO logs in the entry gate. NOT persisted —
+        # restart-on-deploy is rare enough that we accept one re-emission per
+        # (symbol, direction, reason) after each restart.
+        self._last_skip_log_ts: dict[tuple[str, Direction, str], datetime] = {}
         self._load()
 
     # ---------- persistence ----------
@@ -72,6 +78,12 @@ class StateStore:
                     close_price=p.get("close_price"),
                     best_favorable_pct=float(p.get("best_favorable_pct", 0.0)),
                     strong=bool(p.get("strong", False)),
+                    signal_id=p.get("signal_id"),
+                    entry_atr_1h=(
+                        float(p["entry_atr_1h"])
+                        if p.get("entry_atr_1h") is not None
+                        else None
+                    ),
                 )
                 if not pos.closed:
                     self.positions[pos.id] = pos
@@ -84,10 +96,15 @@ class StateStore:
                 )
             except (KeyError, ValueError):
                 continue
+        for entry in raw.get("last_close_ts", []):
+            try:
+                self.last_close_ts[(entry["symbol"], Direction(entry["direction"]))] = (
+                    datetime.fromisoformat(entry["ts"])
+                )
+            except (KeyError, ValueError):
+                continue
         self.last_stats_digest_week = raw.get("last_stats_digest_week")
         self.last_liveness_ping_date = raw.get("last_liveness_ping_date")
-        self.losses_today_date = raw.get("losses_today_date")
-        self.losses_today_count = int(raw.get("losses_today_count", 0))
 
     def save(self) -> None:
         body = {
@@ -96,10 +113,12 @@ class StateStore:
                 {"symbol": s, "direction": d.value, "ts": ts.isoformat()}
                 for (s, d), ts in self.last_alert_ts.items()
             ],
+            "last_close_ts": [
+                {"symbol": s, "direction": d.value, "ts": ts.isoformat()}
+                for (s, d), ts in self.last_close_ts.items()
+            ],
             "last_stats_digest_week": self.last_stats_digest_week,
             "last_liveness_ping_date": self.last_liveness_ping_date,
-            "losses_today_date": self.losses_today_date,
-            "losses_today_count": self.losses_today_count,
         }
         tmp = self.path.with_suffix(".tmp")
         tmp.write_text(json.dumps(body, indent=2))
@@ -117,34 +136,54 @@ class StateStore:
     def mark_alerted(self, symbol: str, direction: Direction) -> None:
         self.last_alert_ts[(symbol, direction)] = datetime.now(tz=UTC)
 
-    # ---------- daily-loss circuit breaker ----------
+    def post_exit_cooldown_remaining_seconds(
+        self,
+        symbol: str,
+        direction: Direction,
+        cooldown_seconds: int,
+        now: datetime | None = None,
+    ) -> float:
+        """Seconds remaining on the per-(symbol, direction) post-exit cooldown.
 
-    def _today_utc_key(self, now: datetime | None = None) -> str:
-        return (now or datetime.now(tz=UTC)).strftime("%Y-%m-%d")
-
-    def record_loss_if_today(self, kind: str, now: datetime | None = None) -> None:
-        """Increment today's SL counter when an exit is a stop-out.
-
-        Called from the exit handler. Resets the counter when a new UTC day
-        starts. Idempotent across restarts because state.json persists the
-        date+count pair.
+        Returns 0 when no prior close is recorded for this key, when
+        cooldown_seconds is non-positive, or when the cooldown has already
+        elapsed. The cooldown is started on every full close (any
+        close_reason) by `close_position`.
         """
-        if kind != "SL_HIT":
-            return
-        today = self._today_utc_key(now)
-        if self.losses_today_date != today:
-            self.losses_today_date = today
-            self.losses_today_count = 0
-        self.losses_today_count += 1
+        if cooldown_seconds <= 0:
+            return 0.0
+        last = self.last_close_ts.get((symbol, direction))
+        if last is None:
+            return 0.0
+        elapsed = ((now or datetime.now(tz=UTC)) - last).total_seconds()
+        return max(0.0, cooldown_seconds - elapsed)
 
-    def daily_loss_cap_reached(self, cfg: Config, now: datetime | None = None) -> bool:
-        cap = cfg.risk.max_daily_losses
-        if cap is None:
-            return False
-        today = self._today_utc_key(now)
-        if self.losses_today_date != today:
-            return False
-        return self.losses_today_count >= cap
+    # ---------- log dedup ----------
+
+    def should_log_skip(
+        self,
+        symbol: str,
+        direction: Direction,
+        reason: str,
+        interval_seconds: int,
+        now: datetime | None = None,
+    ) -> bool:
+        """Return True if a skip-reason INFO log should be emitted now.
+
+        Suppresses repeats of the same (symbol, direction, reason) within
+        `interval_seconds`. Any change to the reason key (e.g. cooldown ->
+        max_concurrent) bypasses the suppression so state transitions are
+        visible immediately.
+        """
+        if interval_seconds <= 0:
+            return True
+        key = (symbol, direction, reason)
+        n = now or datetime.now(tz=UTC)
+        last = self._last_skip_log_ts.get(key)
+        if last is None or (n - last).total_seconds() >= interval_seconds:
+            self._last_skip_log_ts[key] = n
+            return True
+        return False
 
     # ---------- positions ----------
 
@@ -177,7 +216,7 @@ class StateStore:
             # Pad/truncate the multiplier list to match the number of TP levels.
             if len(mults) < len(existing_fractions):
                 mults = mults + [mults[-1]] * (len(existing_fractions) - len(mults))
-            # Confluence bonus: widen the *last* TP for strong (2+ rules) signals.
+            # Confluence bonus: widen the *last* TP for strong (2+ non-funding rules) signals.
             if candidate.is_strong and mults:
                 mults[-1] = max(mults[-1], atr_cfg.strong_last_tp_mult)
             tp_levels = [
@@ -206,6 +245,8 @@ class StateStore:
             initial_stop_loss_price=sl_price,
             tp_levels=tp_levels,
             strong=candidate.is_strong,
+            signal_id=candidate.signal_id,
+            entry_atr_1h=snap.atr_1h,
         )
         self.positions[position.id] = position
         return position
@@ -225,3 +266,6 @@ class StateStore:
             position.close_ts = datetime.now(tz=UTC)
             position.close_reason = reason
             position.close_price = price
+            # Record the close timestamp so post-exit cooldown applies to
+            # subsequent same-side entries on this symbol.
+            self.last_close_ts[(position.symbol, position.direction)] = position.close_ts

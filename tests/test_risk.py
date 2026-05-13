@@ -1,4 +1,8 @@
-"""Integration tests for the entry-side risk gate (max_concurrent + max_daily_losses)."""
+"""Integration tests for the entry-side risk gate.
+
+The gates (in order): cooldown, position_open, opposite_open,
+post_exit_cooldown, max_concurrent, max_per_direction_group.
+"""
 
 import asyncio
 from datetime import UTC, datetime
@@ -6,17 +10,19 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from crypto_flow_bot.config import Config, RiskCfg
+from crypto_flow_bot.config import Config, RiskCfg, SignalsCfg
 from crypto_flow_bot.engine.models import Direction, Snapshot
-from crypto_flow_bot.engine.signals import FiredRule, SignalCandidate
+from crypto_flow_bot.engine.signals import ConfluenceCache, FiredRule, SignalCandidate
 from crypto_flow_bot.engine.state import StateStore
 from crypto_flow_bot.main import Bot
 
 
 def _snap(symbol: str, price: float = 100.0) -> Snapshot:
+    # Funding + LSR both fire SHORT — funding alone would be blocked by the
+    # confirmation gate, so we add LSR as the confirming partner.
     return Snapshot(
         symbol=symbol, ts=datetime.now(tz=UTC), price=price, atr_1h=1.0,
-        funding_rate=0.0012,  # triggers funding_extreme SHORT
+        funding_rate=0.0012, long_short_ratio=2.7,
     )
 
 
@@ -30,10 +36,14 @@ def _bot(tmp_path, cfg: Config) -> Bot:
     bot.logger = MagicMock()
     bot.logger.write_alert = AsyncMock()
     bot.logger.write_position = AsyncMock()
+    bot.logger.write_blocked = AsyncMock()
     # Bot.__new__ skips __init__, so wire up the snapshot cache used by
     # `_build_exit_snapshot` and the lock used by `_handle_entry_signals`.
     bot._last_full_snapshot = {}
     bot._entry_lock = asyncio.Lock()
+    bot.confluence_cache = ConfluenceCache(
+        window_minutes=cfg.signals.confluence_window_minutes,
+    )
     return bot
 
 
@@ -41,7 +51,7 @@ def _bot(tmp_path, cfg: Config) -> Bot:
 async def test_max_concurrent_positions_blocks_third_entry(tmp_path):
     cfg = Config(
         symbols=["BTCUSDT", "ETHUSDT", "SOLUSDT"],
-        risk=RiskCfg(max_concurrent_positions=2, max_daily_losses=None),
+        risk=RiskCfg(max_concurrent_positions=2),
     )
     bot = _bot(tmp_path, cfg)
     # First two snapshots → both opened (different symbols, different cooldown buckets).
@@ -51,55 +61,133 @@ async def test_max_concurrent_positions_blocks_third_entry(tmp_path):
     # Third snapshot → blocked by max_concurrent_positions.
     await bot._handle_entry_signals(_snap("SOLUSDT"))
     assert len(bot.state.open_positions()) == 2
+    # The block must have been recorded with a stable reason token.
+    blocked_calls = bot.logger.write_blocked.await_args_list
+    reasons = [c.kwargs["blocked_reason"] for c in blocked_calls]
+    assert "max_concurrent" in reasons
 
 
 @pytest.mark.asyncio
-async def test_max_per_direction_blocks_same_side_extra(tmp_path):
+async def test_max_per_direction_applies_only_within_correlated_group(tmp_path):
+    """max_per_direction=1 inside [BTCUSDT, ETHUSDT] must block a second
+    same-side entry between BTC and ETH, but must NOT block SOLUSDT (which
+    is outside every group)."""
     cfg = Config(
         symbols=["BTCUSDT", "ETHUSDT", "SOLUSDT"],
-        risk=RiskCfg(max_concurrent_positions=3, max_per_direction=1, max_daily_losses=None),
+        risk=RiskCfg(
+            max_concurrent_positions=3,
+            max_per_direction=1,
+            correlated_groups=[["BTCUSDT", "ETHUSDT"]],
+        ),
     )
     bot = _bot(tmp_path, cfg)
-    # All three snapshots produce SHORT signals (positive funding).
+    await bot._handle_entry_signals(_snap("BTCUSDT"))
+    await bot._handle_entry_signals(_snap("ETHUSDT"))  # same group, same side -> blocked
+    await bot._handle_entry_signals(_snap("SOLUSDT"))  # no group -> allowed
+    open_positions = bot.state.open_positions()
+    open_symbols = {p.symbol for p in open_positions}
+    assert open_symbols == {"BTCUSDT", "SOLUSDT"}
+    assert all(p.direction == Direction.SHORT for p in open_positions)
+
+
+@pytest.mark.asyncio
+async def test_max_per_direction_without_groups_has_no_effect(tmp_path):
+    """max_per_direction with an empty correlated_groups list must NOT
+    behave like the old global cap — it applies per group, and no group
+    means no cap."""
+    cfg = Config(
+        symbols=["BTCUSDT", "ETHUSDT", "SOLUSDT"],
+        risk=RiskCfg(
+            max_concurrent_positions=3,
+            max_per_direction=1,
+            correlated_groups=[],
+        ),
+    )
+    bot = _bot(tmp_path, cfg)
     await bot._handle_entry_signals(_snap("BTCUSDT"))
     await bot._handle_entry_signals(_snap("ETHUSDT"))
     await bot._handle_entry_signals(_snap("SOLUSDT"))
-    open_positions = bot.state.open_positions()
-    assert len(open_positions) == 1
-    assert open_positions[0].direction == Direction.SHORT
+    assert len(bot.state.open_positions()) == 3
 
 
 @pytest.mark.asyncio
-async def test_daily_loss_cap_blocks_new_entries(tmp_path):
+async def test_post_exit_cooldown_blocks_reentry(tmp_path):
+    """After a position closes on a (symbol, direction), the same side must
+    not reopen for `post_exit_cooldown_seconds`."""
     cfg = Config(
-        symbols=["BTCUSDT", "ETHUSDT", "SOLUSDT"],
-        risk=RiskCfg(max_concurrent_positions=10, max_daily_losses=2),
+        symbols=["BTCUSDT"],
+        risk=RiskCfg(post_exit_cooldown_seconds=7200),
     )
     bot = _bot(tmp_path, cfg)
-    # Simulate 2 losses already taken today.
-    bot.state.record_loss_if_today("SL_HIT")
-    bot.state.record_loss_if_today("SL_HIT")
+    # Open and immediately close a BTC SHORT.
+    candidate = SignalCandidate(
+        symbol="BTCUSDT", direction=Direction.SHORT,
+        fired_rules=[
+            FiredRule(name="funding_extreme", description="x"),
+            FiredRule(name="lsr_extreme", description="y"),
+        ],
+        snapshot=_snap("BTCUSDT"),
+        confluence_window_rules={"funding_extreme", "lsr_extreme"},
+    )
+    pos = bot.state.open_from_signal(candidate, cfg)
+    bot.state.close_position(pos, price=100.0, reason="TIME_STOP")
+
+    # A fresh entry attempt on BTC SHORT must be blocked by post_exit_cooldown.
     await bot._handle_entry_signals(_snap("BTCUSDT"))
     assert len(bot.state.open_positions()) == 0
+    reasons = [c.kwargs["blocked_reason"] for c in bot.logger.write_blocked.await_args_list]
+    assert "post_exit_cooldown" in reasons
 
 
 @pytest.mark.asyncio
-async def test_handle_exit_event_increments_loss_counter(tmp_path):
+async def test_post_exit_cooldown_zero_disables_gate(tmp_path):
+    """With cooldown=0, an immediate re-entry on a fresh signal is allowed."""
+    cfg = Config(
+        symbols=["BTCUSDT"],
+        risk=RiskCfg(post_exit_cooldown_seconds=0),
+    )
+    bot = _bot(tmp_path, cfg)
+    candidate = SignalCandidate(
+        symbol="BTCUSDT", direction=Direction.SHORT,
+        fired_rules=[
+            FiredRule(name="funding_extreme", description="x"),
+            FiredRule(name="lsr_extreme", description="y"),
+        ],
+        snapshot=_snap("BTCUSDT"),
+        confluence_window_rules={"funding_extreme", "lsr_extreme"},
+    )
+    pos = bot.state.open_from_signal(candidate, cfg)
+    bot.state.close_position(pos, price=100.0, reason="TIME_STOP")
+    # Bypass alert cooldown so this isn't masked.
+    bot.state.last_alert_ts.clear()
+
+    await bot._handle_entry_signals(_snap("BTCUSDT"))
+    assert len(bot.state.open_positions()) == 1
+
+
+@pytest.mark.asyncio
+async def test_handle_exit_event_does_not_modify_legacy_loss_counter(tmp_path):
+    """Sanity: the entry path no longer reads/writes any daily-loss counter
+    (the gate was deleted). Exit events should just close the position and
+    notify, with no side effects beyond that."""
     cfg = Config(symbols=["BTCUSDT"])
     bot = _bot(tmp_path, cfg)
     candidate = SignalCandidate(
         symbol="BTCUSDT", direction=Direction.LONG,
-        fired_rules=[FiredRule(name="funding_extreme", description="x")],
+        fired_rules=[FiredRule(name="lsr_extreme", description="x")],
         snapshot=_snap("BTCUSDT"),
+        confluence_window_rules={"lsr_extreme"},
     )
     pos = bot.state.open_from_signal(candidate, cfg)
-    # Synthetic SL_HIT event.
     ev = MagicMock()
     ev.kind = "SL_HIT"
     ev.fraction_closed = 1.0
     ev.new_stop_loss_price = None
     await bot._handle_exit_event(pos, ev, price=98.0)
-    assert bot.state.losses_today_count == 1
+    # No daily-loss counter exists anymore.
+    assert not hasattr(bot.state, "losses_today_count")
+    # Post-exit cooldown bookkeeping was activated.
+    assert ("BTCUSDT", Direction.LONG) in bot.state.last_close_ts
 
 
 @pytest.mark.asyncio
@@ -110,31 +198,32 @@ async def test_conflict_policy_skips_when_long_and_short_both_fire(tmp_path):
     from crypto_flow_bot.config import (
         FundingExtremeCfg,
         LsrExtremeCfg,
-        SignalsCfg,
     )
 
     cfg = Config(
         symbols=["BTCUSDT"],
-        risk=RiskCfg(max_concurrent_positions=10, max_daily_losses=None),
+        risk=RiskCfg(max_concurrent_positions=10),
         signals=SignalsCfg(
-            # funding +0.001 → LONG side normally NOT triggered, SHORT trigger above 0.0008
             funding_extreme=FundingExtremeCfg(
                 long_overheated_above=0.0008, short_overheated_below=-0.0008,
             ),
-            # LSR 0.5 → SHORT side normally NOT triggered, LONG trigger below 0.6
             lsr_extreme=LsrExtremeCfg(long_heavy_above=2.5, short_heavy_below=0.6),
+            # Disable the funding-confirmation gate so this scenario produces
+            # one candidate per direction (otherwise SHORT-funding alone is
+            # dropped and there is no conflict to test).
+            funding_extreme_requires_confirmation=False,
         ),
     )
     bot = _bot(tmp_path, cfg)
-    # Construct a snapshot where funding fires SHORT (+0.0012) AND LSR fires
-    # LONG (0.55) at the same time → conflict.
+    # funding +0.0012 -> SHORT, LSR 0.55 -> LONG -> conflict.
     snap = Snapshot(
         symbol="BTCUSDT", ts=datetime.now(tz=UTC), price=100.0, atr_1h=1.0,
         funding_rate=0.0012, long_short_ratio=0.55,
     )
     await bot._handle_entry_signals(snap)
-    # Conflict policy: skip both directions, no position opened.
     assert len(bot.state.open_positions()) == 0
+    reasons = [c.kwargs["blocked_reason"] for c in bot.logger.write_blocked.await_args_list]
+    assert reasons == ["conflicting_signals", "conflicting_signals"]
 
 
 @pytest.mark.asyncio
@@ -188,22 +277,3 @@ def test_build_exit_snapshot_falls_back_to_price_only_without_cache(tmp_path):
     assert snap.price == 42.0
     assert snap.funding_rate is None
     assert snap.long_short_ratio is None
-
-
-@pytest.mark.asyncio
-async def test_handle_exit_event_does_not_count_tp_or_time_stop(tmp_path):
-    cfg = Config(symbols=["BTCUSDT"])
-    bot = _bot(tmp_path, cfg)
-    candidate = SignalCandidate(
-        symbol="BTCUSDT", direction=Direction.LONG,
-        fired_rules=[FiredRule(name="funding_extreme", description="x")],
-        snapshot=_snap("BTCUSDT"),
-    )
-    pos = bot.state.open_from_signal(candidate, cfg)
-    for kind, frac in [("TP_HIT", 0.5), ("TIME_STOP", 0.5)]:
-        ev = MagicMock()
-        ev.kind = kind
-        ev.fraction_closed = frac
-        ev.new_stop_loss_price = None
-        await bot._handle_exit_event(pos, ev, price=100.0)
-    assert bot.state.losses_today_count == 0

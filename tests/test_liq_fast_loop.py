@@ -16,6 +16,7 @@ import pytest
 
 from crypto_flow_bot.config import Config, LiqCascadeCfg, RiskCfg, SignalsCfg
 from crypto_flow_bot.engine.models import Direction, Snapshot
+from crypto_flow_bot.engine.signals import ConfluenceCache
 from crypto_flow_bot.engine.state import StateStore
 from crypto_flow_bot.main import Bot
 
@@ -30,12 +31,16 @@ def _bot(tmp_path, cfg: Config, liq_totals: dict[str, tuple[float, float]]) -> B
     bot.logger.write_alert = AsyncMock()
     bot.logger.write_position = AsyncMock()
     bot.logger.write_snapshot = AsyncMock()
+    bot.logger.write_blocked = AsyncMock()
     bot._last_full_snapshot = {}
     bot._entry_lock = asyncio.Lock()
     bot._stop = asyncio.Event()
     bot.client = MagicMock()
     bot.liq_stream = MagicMock()
     bot.liq_stream.totals = MagicMock(side_effect=lambda s: liq_totals.get(s, (0.0, 0.0)))
+    bot.confluence_cache = ConfluenceCache(
+        window_minutes=cfg.signals.confluence_window_minutes,
+    )
     return bot
 
 
@@ -68,7 +73,7 @@ def _liq_cfg(threshold: float = 1_000_000.0) -> Config:
         symbols=["BTCUSDT", "ETHUSDT"],
         alert_cooldown_seconds=1800,
         liq_fast_check_interval_seconds=5,
-        risk=RiskCfg(max_concurrent_positions=10, max_daily_losses=None),
+        risk=RiskCfg(max_concurrent_positions=10, post_exit_cooldown_seconds=0),
         signals=SignalsCfg(
             funding_extreme=FundingExtremeCfg(enabled=False),
             oi_surge=OiSurgeCfg(enabled=False),

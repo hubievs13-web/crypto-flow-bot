@@ -1,6 +1,7 @@
 name: Fly Deploy
 
-# Auto-deploy to Fly.io on every push to main.
+# Auto-deploy to Fly.io after the CI workflow (ruff + mypy + pytest) finishes
+# successfully on main. This prevents a broken commit from being rolled out.
 # Requires the FLY_API_TOKEN secret to be set in GitHub repo settings:
 #   1. Generate a deploy token locally: `fly tokens create deploy -x 999999h`
 #   2. In GitHub: Settings → Secrets and variables → Actions → New repository secret
@@ -8,20 +9,32 @@ name: Fly Deploy
 #      Value: (the token from step 1, including the "FlyV1 fm2_..." prefix)
 
 on:
-  push:
-    branches:
-      - main
+  workflow_run:
+    workflows: ["CI"]
+    branches: [main]
+    types:
+      - completed
   workflow_dispatch: {}  # manual trigger from GitHub UI
 
 jobs:
   deploy:
     name: Deploy app
     runs-on: ubuntu-latest
+    # Only deploy when CI succeeded on main (or when manually dispatched).
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == 'main')
     concurrency:
       group: fly-deploy
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
+        with:
+          # workflow_run does not pass the triggering commit by default;
+          # pin to the SHA that CI actually validated so we deploy the
+          # exact code that passed tests.
+          ref: ${{ github.event.workflow_run.head_sha }}
       - uses: superfly/flyctl-actions/setup-flyctl@master
       - run: flyctl deploy --remote-only
         env:
