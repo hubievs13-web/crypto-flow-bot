@@ -26,6 +26,20 @@ alert_cooldown_seconds: 7200  # 2h
 # (any of them is enough). The signal engine reports which rule(s) fired.
 
 signals:
+  # Cross-snapshot confluence window. The signal engine remembers which rules
+  # fired in each direction for the last X minutes (per symbol). Two effects:
+  #   1. STRONG-marker uses this rolling set, not a single snapshot, so a
+  #      slow trigger (funding/LSR) can pair with a fast one (liq/OI) that
+  #      fires moments later.
+  #   2. `funding_extreme_requires_confirmation` (below) drops funding-only
+  #      candidates unless something else in this window agrees with them.
+  confluence_window_minutes: 30
+
+  # Funding-only entries lose money in our logs (-3.98% net across 23 trades),
+  # because funding can stay extreme for days without a turn. Require at
+  # least one other rule in the confluence window to confirm before opening.
+  funding_extreme_requires_confirmation: true
+
   # Calibrated against ACTUAL Binance funding data observed on May 7, 2026
   # (provided by user via Coinglass screenshots):
   #
@@ -175,10 +189,18 @@ exits:
 
   # Trailing stop: once price has moved this far in your favor, lock in
   # `lock_in_pct` of profit (move stop to entry + lock_in_pct).
+  #
+  # `activate_at_atr_mult` is the preferred trigger: trailing activates when
+  # favorable_pct >= (mult × entry_atr_1h) / entry_price, so the trigger
+  # scales with each symbol's actual volatility on entry. The fixed
+  # `activate_at_pct` is used as a fallback when ATR was unavailable at
+  # entry time (rare; first poll after a cold start before klines load).
+  # Set `activate_at_atr_mult: null` to disable the ATR path entirely.
   trailing:
     enabled: true
-    activate_at_pct: 0.015 # start trailing after +1.5%
-    lock_in_pct: 0.005     # lock in at least +0.5% — if reaches +1.5% then reverses, you exit at +0.5%
+    activate_at_atr_mult: 1.0   # activate at +1.0 × entry-ATR
+    activate_at_pct: 0.008      # fallback: +0.8% (was 1.5%; logs showed it never triggered)
+    lock_in_pct: 0.005          # lock in at least +0.5%
 
   # Time stop: close the position after this long if no other exit fired.
   # 8h aligns with Binance funding cycles, the source of our mean-reversion
@@ -262,17 +284,35 @@ stats:
 
 
 # ─── Risk management ───────────────────────────────────────────────────────
-# Two top-level guards applied *before* opening any new position. Independent
-# of signal strength: they only enforce dispersion and bound drawdown.
+# Pre-trade guards applied before opening any new position. Independent of
+# signal strength: they enforce dispersion, debounce reopens, and keep the
+# log readable.
 risk:
   # Hard cap on simultaneously open virtual positions across all symbols.
-  # BTC/ETH/SOL are highly correlated, so 3 simultaneous LONGs ≈ 3× same beta.
   max_concurrent_positions: 2
 
-  # Optional per-direction cap. If set (e.g. 1), at most that many LONGs and
-  # at most that many SHORTs may be open at the same time. null disables.
-  max_per_direction: null
+  # Per-direction cap *within each correlated group* (NOT global). With the
+  # default `correlated_groups: [[BTCUSDT, ETHUSDT]]`, the bot will not hold
+  # two LONG-BTC and LONG-ETH at the same time — they are ~0.9 correlated and
+  # acting as one 2x beta bet — but a SOL LONG is still allowed in parallel
+  # because SOL is outside every group. null disables.
+  max_per_direction: 1
 
-  # Daily loss circuit breaker: after this many SL_HIT exits in the current
-  # UTC day, refuse to open new positions until UTC midnight. null disables.
-  max_daily_losses: 3
+  # Symbols that should be treated as one for `max_per_direction`. Each list
+  # is one group; symbols not in any list are unrestricted. BTC/ETH have
+  # ~0.9 30-day return correlation, SOL ~0.7 — the heuristic is loose on
+  # purpose, refine later from realized data.
+  correlated_groups:
+    - [BTCUSDT, ETHUSDT]
+
+  # After ANY exit (SL/TP/TIME_STOP/REASON_INVALIDATED), block same-side
+  # re-entry on the same symbol for this many seconds. The 6-hour log we
+  # debugged showed 7 reopens within 30 minutes of a close, all of which
+  # were losing the same way; this gate stops that. Set 0 to disable.
+  post_exit_cooldown_seconds: 7200   # 2 hours
+
+  # Deduplication window for skip-reason INFO logs. When the same
+  # (symbol, direction, reason) triplet repeats inside this window, the
+  # message is suppressed (the current state is still emitted at the next
+  # state transition or after the window elapses). 0 disables dedup.
+  skip_log_interval_seconds: 1800    # 30 minutes
