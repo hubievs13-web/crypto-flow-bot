@@ -101,8 +101,22 @@ def evaluate_exit(position: Position, snap: Snapshot, cfg: Config) -> list[ExitE
     if cfg_exits.trailing.enabled:
         if fav_pct > position.best_favorable_pct:
             position.best_favorable_pct = fav_pct
+        # ATR-based activation when the position recorded an entry-time ATR
+        # and the config has `activate_at_atr_mult` set. Otherwise fall back
+        # to the fixed `activate_at_pct`. The ATR path scales with each
+        # symbol's actual volatility on entry, so trailing engages at a
+        # comparable "distance traveled" regardless of regime.
+        atr_mult = cfg_exits.trailing.activate_at_atr_mult
+        activate_pct = cfg_exits.trailing.activate_at_pct
         if (
-            position.best_favorable_pct >= cfg_exits.trailing.activate_at_pct
+            atr_mult is not None
+            and position.entry_atr_1h is not None
+            and position.entry_atr_1h > 0
+            and position.entry_price > 0
+        ):
+            activate_pct = (atr_mult * position.entry_atr_1h) / position.entry_price
+        if (
+            position.best_favorable_pct >= activate_pct
             and position.stop_loss_price == position.initial_stop_loss_price
         ):
             new_sl = _trailing_stop_price(position, cfg_exits.trailing.lock_in_pct)
@@ -142,7 +156,7 @@ def evaluate_exit(position: Position, snap: Snapshot, cfg: Config) -> list[ExitE
                 current_value=snap.funding_rate,
                 neutral=0.0,
                 retrace_pct=ri.funding_normalized_retrace_pct,
-            ):
+            ) and entry_f is not None:
                 invalidated = True
                 why = f"funding {snap.funding_rate * 100:+.3f}% retraced from {entry_f * 100:+.3f}%"
         if (
