@@ -18,7 +18,7 @@ from crypto_flow_bot.data.binance import BinanceClient, build_snapshot
 from crypto_flow_bot.data.liquidations import LiquidationStream
 from crypto_flow_bot.engine.exits import evaluate_exit
 from crypto_flow_bot.engine.models import Direction, Snapshot
-from crypto_flow_bot.engine.signals import evaluate
+from crypto_flow_bot.engine.signals import ConfluenceCache, evaluate
 from crypto_flow_bot.engine.state import StateStore
 from crypto_flow_bot.log.store import JsonlLogger
 from crypto_flow_bot.notify.stats import (
@@ -66,6 +66,20 @@ def _read_env() -> tuple[str, list[str]]:
     return token, chat_ids
 
 
+def _correlation_group_for(symbol: str, groups: list[list[str]]) -> list[str] | None:
+    """Return the first correlation group that contains `symbol`, or None.
+
+    Used by the entry-side per-direction cap so that the limit is enforced
+    *within* a group of correlated symbols (e.g. BTCUSDT/ETHUSDT) instead
+    of globally. Symbols not listed in any group are not subject to the
+    cap at all.
+    """
+    for g in groups:
+        if symbol in g:
+            return g
+    return None
+
+
 class Bot:
     def __init__(
         self,
@@ -92,6 +106,11 @@ class Bot:
         # fast `_liq_fast_loop` cannot both pass the cooldown check on the
         # same (symbol, direction) and double-fire an alert.
         self._entry_lock = asyncio.Lock()
+        # Rolling per-(symbol, direction) rule-fire history for the
+        # cross-snapshot confluence gate (funding-needs-confirmation, STRONG).
+        self.confluence_cache = ConfluenceCache(
+            window_minutes=cfg.signals.confluence_window_minutes,
+        )
 
     def request_stop(self) -> None:
         self._stop.set()
@@ -348,7 +367,7 @@ class Bot:
             await self._handle_entry_signals_locked(snap)
 
     async def _handle_entry_signals_locked(self, snap: Snapshot) -> None:
-        candidates = evaluate(snap, self.cfg)
+        candidates = evaluate(snap, self.cfg, cache=self.confluence_cache)
         # Conflict policy: if rules fired in *both* directions on the same
         # snapshot, skip the whole symbol this tick. The OR-logic means the
         # market is sending mixed signals and the previous "open LONG first,
@@ -363,48 +382,31 @@ class Bot:
                     for c in candidates
                 ),
             )
+            for c in candidates:
+                await self.logger.write_blocked(
+                    signal_id=c.signal_id,
+                    symbol=c.symbol,
+                    direction=c.direction,
+                    blocked_reason="conflicting_signals",
+                    fired_rules=[r.name for r in c.fired_rules],
+                    confluence_window_rules=list(c.confluence_window_rules),
+                    snapshot_ts=snap.ts,
+                )
             return
         for candidate in candidates:
-            cd = self.state.cooldown_remaining_seconds(
-                candidate.symbol, candidate.direction, self.cfg.alert_cooldown_seconds
-            )
-            if cd > 0:
-                log.debug("cooldown active for %s %s: %.0fs left", candidate.symbol, candidate.direction.value, cd)
-                continue
-            existing = self.state.open_for(candidate.symbol, candidate.direction)
-            if existing is not None:
-                log.debug("position already open for %s %s; skip", candidate.symbol, candidate.direction.value)
-                continue
-            if self.state.open_for(candidate.symbol, candidate.direction.opposite) is not None:
-                log.info(
-                    "skipping new %s entry for %s — opposite-side position already open",
-                    candidate.direction.value, candidate.symbol,
+            blocked_reason = self._entry_blocked_reason(candidate)
+            if blocked_reason is not None:
+                self._maybe_log_skip(candidate, blocked_reason)
+                await self.logger.write_blocked(
+                    signal_id=candidate.signal_id,
+                    symbol=candidate.symbol,
+                    direction=candidate.direction,
+                    blocked_reason=blocked_reason,
+                    fired_rules=[r.name for r in candidate.fired_rules],
+                    confluence_window_rules=list(candidate.confluence_window_rules),
+                    snapshot_ts=snap.ts,
                 )
                 continue
-            # Risk #2 — daily-loss circuit breaker.
-            if self.state.daily_loss_cap_reached(self.cfg):
-                log.info(
-                    "skipping new %s entry for %s — daily-loss cap reached (%d SLs today)",
-                    candidate.direction.value, candidate.symbol, self.state.losses_today_count,
-                )
-                continue
-            # Risk #1 — global concurrency cap (and optional per-direction cap).
-            risk = self.cfg.risk
-            open_now = self.state.open_positions()
-            if len(open_now) >= risk.max_concurrent_positions:
-                log.info(
-                    "skipping new %s entry for %s — at max_concurrent_positions=%d",
-                    candidate.direction.value, candidate.symbol, risk.max_concurrent_positions,
-                )
-                continue
-            if risk.max_per_direction is not None:
-                same_dir = sum(1 for p in open_now if p.direction == candidate.direction)
-                if same_dir >= risk.max_per_direction:
-                    log.info(
-                        "skipping new %s entry for %s — at max_per_direction=%d",
-                        candidate.direction.value, candidate.symbol, risk.max_per_direction,
-                    )
-                    continue
             position = self.state.open_from_signal(candidate, self.cfg)
             self.state.mark_alerted(candidate.symbol, candidate.direction)
             self.state.save()
@@ -413,6 +415,75 @@ class Bot:
             await self.logger.write_alert(alert)
             await self.logger.write_position(position)
 
+    def _entry_blocked_reason(self, candidate) -> str | None:  # type: ignore[no-untyped-def]
+        """Run the risk gates in order and return the first blocking reason.
+
+        Reason tokens are stable, machine-readable strings (`cooldown`,
+        `position_open`, `opposite_open`, `post_exit_cooldown`,
+        `max_concurrent`, `max_per_direction_group`). They are written to
+        `blocked.jsonl` and also drive the in-memory log-dedup keys.
+        """
+        cd = self.state.cooldown_remaining_seconds(
+            candidate.symbol, candidate.direction, self.cfg.alert_cooldown_seconds
+        )
+        if cd > 0:
+            return "cooldown"
+        if self.state.open_for(candidate.symbol, candidate.direction) is not None:
+            return "position_open"
+        if self.state.open_for(candidate.symbol, candidate.direction.opposite) is not None:
+            return "opposite_open"
+        risk = self.cfg.risk
+        post_exit = self.state.post_exit_cooldown_remaining_seconds(
+            candidate.symbol, candidate.direction, risk.post_exit_cooldown_seconds
+        )
+        if post_exit > 0:
+            return "post_exit_cooldown"
+        open_now = self.state.open_positions()
+        if len(open_now) >= risk.max_concurrent_positions:
+            return "max_concurrent"
+        # Per-direction cap is enforced only *within* a correlation group.
+        # Symbols outside every group are unrestricted by this gate (e.g.
+        # SOLUSDT can sit alongside a BTCUSDT LONG when the only group is
+        # [BTCUSDT, ETHUSDT]).
+        if risk.max_per_direction is not None:
+            group = _correlation_group_for(candidate.symbol, risk.correlated_groups)
+            if group is not None:
+                same_dir_in_group = sum(
+                    1
+                    for p in open_now
+                    if p.direction == candidate.direction and p.symbol in group
+                )
+                if same_dir_in_group >= risk.max_per_direction:
+                    return "max_per_direction_group"
+        return None
+
+    def _maybe_log_skip(self, candidate, reason: str) -> None:  # type: ignore[no-untyped-def]
+        """Emit a deduplicated INFO log for a blocked entry candidate.
+
+        `cooldown` and `position_open` are noisy and stay at DEBUG — they
+        repeat every poll cycle while the state persists and carry no new
+        information. The other reasons go through StateStore.should_log_skip
+        which suppresses repeats of the same (symbol, direction, reason)
+        within `risk.skip_log_interval_seconds` (default 30 min).
+        """
+        if reason in ("cooldown", "position_open"):
+            log.debug(
+                "skip %s %s signal_id=%s reason=%s",
+                candidate.symbol, candidate.direction.value,
+                candidate.signal_id, reason,
+            )
+            return
+        interval = self.cfg.risk.skip_log_interval_seconds
+        if self.state.should_log_skip(
+            candidate.symbol, candidate.direction, reason, interval,
+        ):
+            log.info(
+                "skip %s %s signal_id=%s reason=%s rules=%s",
+                candidate.symbol, candidate.direction.value,
+                candidate.signal_id, reason,
+                ",".join(r.name for r in candidate.fired_rules),
+            )
+
     async def _handle_exit_event(self, position, ev, price: float) -> None:  # type: ignore[no-untyped-def]
         cfg = self.cfg
         if ev.kind == "TRAILING_MOVE":
@@ -420,8 +491,6 @@ class Bot:
                 position.stop_loss_price = ev.new_stop_loss_price
         elif ev.fraction_closed > 0:
             self.state.close_position(position, price, reason=ev.kind, fraction=ev.fraction_closed)
-            # Daily-loss circuit breaker tally.
-            self.state.record_loss_if_today(ev.kind)
         alert = format_exit_alert(position, ev, price, cfg)
         await self.notifier.send(alert.text)
         await self.logger.write_alert(alert)
