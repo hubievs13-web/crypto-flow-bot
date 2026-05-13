@@ -1,12 +1,17 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
-from crypto_flow_bot.config import Config
+from crypto_flow_bot.config import Config, SignalsCfg
 from crypto_flow_bot.engine.models import Direction, Snapshot
-from crypto_flow_bot.engine.signals import evaluate
+from crypto_flow_bot.engine.signals import ConfluenceCache, evaluate
 
 
-def _cfg() -> Config:
-    return Config(symbols=["BTCUSDT"])
+def _cfg(funding_requires_confirmation: bool = True) -> Config:
+    return Config(
+        symbols=["BTCUSDT"],
+        signals=SignalsCfg(
+            funding_extreme_requires_confirmation=funding_requires_confirmation,
+        ),
+    )
 
 
 def _snap(**overrides) -> Snapshot:
@@ -15,19 +20,33 @@ def _snap(**overrides) -> Snapshot:
     return Snapshot(**base)
 
 
-def test_funding_long_overheated_yields_short_signal():
+def test_funding_alone_blocked_by_confirmation_gate():
+    """funding_extreme firing alone (no other rule in the confluence window)
+    must produce NO candidate when the confirmation gate is on."""
     snap = _snap(funding_rate=0.0010)
     out = evaluate(snap, _cfg())
+    assert out == []
+
+
+def test_funding_alone_with_gate_off_yields_signal():
+    """With the confirmation gate explicitly disabled, funding_extreme alone
+    is allowed to open a candidate (legacy behavior)."""
+    snap = _snap(funding_rate=0.0010)
+    out = evaluate(snap, _cfg(funding_requires_confirmation=False))
     assert len(out) == 1
     assert out[0].direction is Direction.SHORT
     assert any(r.name == "funding_extreme" for r in out[0].fired_rules)
 
 
-def test_funding_short_overheated_yields_long_signal():
-    snap = _snap(funding_rate=-0.0007)
+def test_funding_with_lsr_confirming_yields_signal():
+    """funding_extreme + lsr_extreme in the same direction on the same
+    snapshot passes the confirmation gate."""
+    snap = _snap(funding_rate=0.0010, long_short_ratio=2.7)
     out = evaluate(snap, _cfg())
     assert len(out) == 1
-    assert out[0].direction is Direction.LONG
+    assert out[0].direction is Direction.SHORT
+    rule_names = {r.name for r in out[0].fired_rules}
+    assert {"funding_extreme", "lsr_extreme"}.issubset(rule_names)
 
 
 def test_lsr_crowded_long_yields_short_signal():
@@ -65,6 +84,58 @@ def test_two_directions_can_fire_simultaneously():
     out = evaluate(snap, _cfg())
     dirs = {c.direction for c in out}
     assert Direction.SHORT in dirs
+
+
+# ─── Cross-snapshot confluence window ──────────────────────────────────────
+
+def test_confluence_window_lets_funding_team_up_with_earlier_liq():
+    """liq_cascade fired 5 min ago → funding fires now alone → entry allowed
+    because the cache remembers the earlier non-funding rule."""
+    cache = ConfluenceCache(window_minutes=30)
+    now = datetime.now(tz=UTC)
+    # 5 min ago: liq cascade fires SHORT on its own.
+    earlier = _snap(
+        ts=now - timedelta(minutes=5),
+        short_liquidations_usd_window=80_000_000.0,
+    )
+    evaluate(earlier, _cfg(), cache=cache, now=earlier.ts)
+    # Now: only funding fires SHORT. Without the cache this would be blocked;
+    # with it, the candidate is allowed.
+    later = _snap(ts=now, funding_rate=0.0010)
+    out = evaluate(later, _cfg(), cache=cache, now=later.ts)
+    assert len(out) == 1
+    assert out[0].direction is Direction.SHORT
+    assert {"funding_extreme", "liq_cascade"}.issubset(out[0].confluence_window_rules)
+
+
+def test_confluence_window_drops_stale_partners():
+    """A liq_cascade older than the window must not rescue a funding-only
+    candidate."""
+    cache = ConfluenceCache(window_minutes=30)
+    now = datetime.now(tz=UTC)
+    stale = _snap(
+        ts=now - timedelta(minutes=45),
+        short_liquidations_usd_window=80_000_000.0,
+    )
+    evaluate(stale, _cfg(), cache=cache, now=stale.ts)
+    later = _snap(ts=now, funding_rate=0.0010)
+    out = evaluate(later, _cfg(), cache=cache, now=later.ts)
+    assert out == []
+
+
+def test_confluence_window_keyed_by_direction():
+    """A liq_cascade in LONG direction must NOT rescue a SHORT funding
+    candidate — confluence is per (symbol, direction)."""
+    cache = ConfluenceCache(window_minutes=30)
+    now = datetime.now(tz=UTC)
+    long_only = _snap(
+        ts=now - timedelta(minutes=5),
+        long_liquidations_usd_window=80_000_000.0,
+    )
+    evaluate(long_only, _cfg(), cache=cache, now=long_only.ts)
+    short_funding = _snap(ts=now, funding_rate=0.0010)
+    out = evaluate(short_funding, _cfg(), cache=cache, now=short_funding.ts)
+    assert out == []
 
 
 # ─── OI surge with price-alignment ──────────────────────────────────────────
@@ -127,8 +198,9 @@ def test_trend_filter_exempts_liq_cascade():
 def test_trend_filter_passes_aligned_signal():
     # Funding-driven LONG below EMA (downtrend) is contra-trend -> blocked.
     # Funding-driven LONG above EMA (uptrend) is trend-aligned -> passes through.
+    # Gate is off in this scenario because funding alone is the rule under test.
     snap = _snap(price=50000.0, ema50_1h=49000.0, funding_rate=-0.0015)
-    out = evaluate(snap, _cfg())
+    out = evaluate(snap, _cfg(funding_requires_confirmation=False))
     assert any(c.direction is Direction.LONG for c in out)
 
 
@@ -148,30 +220,48 @@ def test_liq_cascade_below_threshold_does_not_fire():
     assert all(not any(r.name == "liq_cascade" for r in c.fired_rules) for c in out)
 
 
-# ─── Confluence: 2+ rules in same direction → is_strong ──────────────────────
+# ─── STRONG: 2+ non-funding rules within the confluence window ─────────────
 
-def test_single_rule_signal_is_not_strong():
-    """One rule fired = not strong (regular signal)."""
-    snap = _snap(funding_rate=0.0010)
+def test_single_non_funding_rule_is_not_strong():
+    """One non-funding rule fired = regular signal, not strong."""
+    snap = _snap(long_short_ratio=2.7)  # SHORT via LSR alone
     out = evaluate(snap, _cfg())
     assert len(out) == 1
     assert out[0].is_strong is False
 
 
-def test_two_rules_in_same_direction_is_strong():
-    """funding_extreme (positive) + lsr_extreme (longs heavy) both yield SHORT → strong."""
+def test_funding_plus_one_non_funding_rule_is_not_strong():
+    """funding_extreme + lsr_extreme is the regular entry condition, NOT a
+    strong confluence. STRONG is reserved for two *fast* triggers."""
     snap = _snap(funding_rate=0.0012, long_short_ratio=2.7)
     out = evaluate(snap, _cfg())
     short = [c for c in out if c.direction is Direction.SHORT]
     assert short
     rule_names = {r.name for r in short[0].fired_rules}
     assert {"funding_extreme", "lsr_extreme"}.issubset(rule_names)
+    assert short[0].is_strong is False
+
+
+def test_two_non_funding_rules_is_strong():
+    """LSR (longs crowded) + short-side liq cascade both yield SHORT →
+    two non-funding rules → strong confluence."""
+    snap = _snap(
+        long_short_ratio=2.7,
+        short_liquidations_usd_window=80_000_000.0,
+    )
+    out = evaluate(snap, _cfg())
+    short = [c for c in out if c.direction is Direction.SHORT]
+    assert short
+    rule_names = {r.name for r in short[0].fired_rules}
+    assert {"lsr_extreme", "liq_cascade"}.issubset(rule_names)
     assert short[0].is_strong is True
 
 
 def test_rules_split_across_directions_not_strong_for_either():
     """funding is + (SHORT signal) and LSR shows shorts heavy (LONG signal) →
-    opposite directions, neither is a strong confluence."""
+    opposite directions, neither is a strong confluence. The funding-only
+    SHORT candidate gets dropped by the confirmation gate; the LSR-only
+    LONG candidate is allowed but is not strong (one non-funding rule)."""
     snap = _snap(funding_rate=0.0012, long_short_ratio=0.5)
     out = evaluate(snap, _cfg())
     for c in out:
@@ -184,18 +274,23 @@ from crypto_flow_bot.config import (  # noqa: E402
     FundingExtremeCfg,
     LiqCascadeCfg,
     LsrExtremeCfg,
-    SignalsCfg,
     SymbolOverridesCfg,
 )
 
 
-def _cfg_with_per_symbol() -> Config:
-    """Two symbols: BTC has very tight thresholds, SOL has loose ones."""
+def _cfg_with_per_symbol(funding_requires_confirmation: bool = False) -> Config:
+    """Two symbols: BTC has very tight thresholds, SOL has loose ones.
+
+    The funding-confirmation gate defaults to OFF here so per-symbol
+    threshold tests can observe the underlying rule-firing behavior in
+    isolation; the gate's own coverage lives in the earlier section.
+    """
     return Config(
         symbols=["BTCUSDT", "SOLUSDT"],
         signals=SignalsCfg(
             funding_extreme=FundingExtremeCfg(long_overheated_above=0.0010,
                                               short_overheated_below=-0.0008),
+            funding_extreme_requires_confirmation=funding_requires_confirmation,
             per_symbol={
                 "BTCUSDT": SymbolOverridesCfg(
                     funding_extreme=FundingExtremeCfg(long_overheated_above=0.0005,
@@ -227,8 +322,11 @@ def test_for_symbol_applies_only_specified_fields():
 
 
 def test_per_symbol_funding_threshold_fires_on_btc_only():
-    """Funding +0.06% triggers BTC (override 0.05%) but NOT global (0.10%)."""
-    cfg = _cfg_with_per_symbol()
+    """Funding +0.06% triggers BTC (override 0.05%) but NOT global (0.10%).
+
+    Confirmation gate is off here so we test rule firing only.
+    """
+    cfg = _cfg_with_per_symbol()  # confirmation gate off by default in this helper
     snap_btc = _snap(symbol="BTCUSDT", funding_rate=0.0006)
     snap_eth = _snap(symbol="ETHUSDT", funding_rate=0.0006)  # no override -> global
     assert any(any(r.name == "funding_extreme" for r in c.fired_rules)

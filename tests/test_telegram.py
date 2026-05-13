@@ -50,17 +50,24 @@ def _snap(price: float = 100.0, atr: float | None = 1.0) -> Snapshot:
     return Snapshot(symbol="BTCUSDT", ts=datetime.now(tz=UTC), price=price, atr_1h=atr)
 
 
-def test_format_entry_alert_includes_strong_marker_when_confluence(tmp_path, monkeypatch):
+def test_format_entry_alert_includes_strong_marker_when_two_non_funding_rules(tmp_path, monkeypatch):
+    """STRONG marker requires 2+ non-funding rules in the confluence window.
+
+    funding_extreme + lsr_extreme used to qualify; under the new STRONG
+    definition (P0-8) only LSR + OI / LSR + liq_cascade / OI + liq_cascade
+    do, because STRONG is meant for two genuinely *fast* triggers agreeing.
+    """
     monkeypatch.setenv("CRYPTO_FLOW_BOT_STATE_DIR", str(tmp_path))
     cfg = _cfg()
     snap = _snap(price=100.0, atr=1.0)
     candidate = SignalCandidate(
         symbol="BTCUSDT", direction=Direction.LONG,
         fired_rules=[
-            FiredRule(name="funding_extreme", description="funding -0.10%"),
             FiredRule(name="lsr_extreme", description="L/S 0.55"),
+            FiredRule(name="liq_cascade", description="short liqs $80M"),
         ],
         snapshot=snap,
+        confluence_window_rules={"lsr_extreme", "liq_cascade"},
     )
     assert candidate.is_strong is True
     store = StateStore(path=tmp_path)
@@ -72,23 +79,45 @@ def test_format_entry_alert_includes_strong_marker_when_confluence(tmp_path, mon
     assert abs(pos.tp_levels[-1].pct - expected_pct) < 1e-9
 
 
-def test_format_entry_alert_omits_strong_for_single_rule(tmp_path, monkeypatch):
+def test_format_entry_alert_omits_strong_for_funding_plus_one_rule(tmp_path, monkeypatch):
+    """funding_extreme + 1 non-funding rule is a regular entry (no STRONG)."""
     monkeypatch.setenv("CRYPTO_FLOW_BOT_STATE_DIR", str(tmp_path))
     cfg = _cfg()
     snap = _snap(price=100.0, atr=1.0)
     candidate = SignalCandidate(
         symbol="BTCUSDT", direction=Direction.LONG,
-        fired_rules=[FiredRule(name="funding_extreme", description="funding -0.10%")],
+        fired_rules=[
+            FiredRule(name="funding_extreme", description="funding -0.10%"),
+            FiredRule(name="lsr_extreme", description="L/S 0.55"),
+        ],
         snapshot=snap,
+        confluence_window_rules={"funding_extreme", "lsr_extreme"},
     )
     assert candidate.is_strong is False
     store = StateStore(path=tmp_path)
     pos = store.open_from_signal(candidate, cfg)
     alert = format_entry_alert(candidate, pos, cfg)
     assert "STRONG" not in alert.text
-    # Single-rule signal uses default tp_atr_mults[-1] = 3.0
+    # Regular signal uses default tp_atr_mults[-1] = 3.0
     expected_pct = 3.0 * 1.0 / 100.0
     assert abs(pos.tp_levels[-1].pct - expected_pct) < 1e-9
+
+
+def test_format_entry_alert_omits_strong_for_single_rule(tmp_path, monkeypatch):
+    monkeypatch.setenv("CRYPTO_FLOW_BOT_STATE_DIR", str(tmp_path))
+    cfg = _cfg()
+    snap = _snap(price=100.0, atr=1.0)
+    candidate = SignalCandidate(
+        symbol="BTCUSDT", direction=Direction.LONG,
+        fired_rules=[FiredRule(name="lsr_extreme", description="L/S 0.55")],
+        snapshot=snap,
+        confluence_window_rules={"lsr_extreme"},
+    )
+    assert candidate.is_strong is False
+    store = StateStore(path=tmp_path)
+    pos = store.open_from_signal(candidate, cfg)
+    alert = format_entry_alert(candidate, pos, cfg)
+    assert "STRONG" not in alert.text
 
 
 # ─── Startup message reflects per-symbol thresholds + ATR-based exits ──────
