@@ -77,6 +77,21 @@ class SignalsCfg(BaseModel):
     lsr_extreme: LsrExtremeCfg = Field(default_factory=LsrExtremeCfg)
     liq_cascade: LiqCascadeCfg = Field(default_factory=LiqCascadeCfg)
     trend_filter: TrendFilterCfg = Field(default_factory=TrendFilterCfg)
+
+    # Confluence window (minutes): a rule that fired on any snapshot within
+    # this many minutes back counts toward the confluence set for the
+    # *current* candidate's (symbol, direction). 0 means snapshot-only
+    # confluence (legacy behavior). Default 30 lets a slow trigger like
+    # `funding_extreme` team up with a fast trigger like `liq_cascade` that
+    # arrived a few minutes earlier.
+    confluence_window_minutes: int = 30
+
+    # When True, a snapshot that fires ONLY `funding_extreme` (with no other
+    # rule in the confluence window) does NOT produce a candidate. Funding
+    # alone showed net-negative PnL across 23 closed trades in our logs.
+    # Set False to revert to funding-only entries (legacy behavior).
+    funding_extreme_requires_confirmation: bool = True
+
     # Optional per-symbol overrides keyed by symbol (e.g. "BTCUSDT").
     per_symbol: dict[str, SymbolOverridesCfg] = Field(default_factory=dict)
 
@@ -85,8 +100,8 @@ class SignalsCfg(BaseModel):
 
         Returns self unchanged when no overrides are configured for `symbol`.
         Otherwise returns a shallow copy with each non-None override field
-        replacing the matching global subconfig. Trend filter and per_symbol
-        themselves are not overrideable (no use case yet).
+        replacing the matching global subconfig. Trend filter, per_symbol,
+        and the confluence flags are not overrideable (no use case yet).
         """
         ov = self.per_symbol.get(symbol)
         if ov is None:
@@ -97,6 +112,8 @@ class SignalsCfg(BaseModel):
             lsr_extreme=ov.lsr_extreme or self.lsr_extreme,
             liq_cascade=ov.liq_cascade or self.liq_cascade,
             trend_filter=self.trend_filter,
+            confluence_window_minutes=self.confluence_window_minutes,
+            funding_extreme_requires_confirmation=self.funding_extreme_requires_confirmation,
             per_symbol=self.per_symbol,
         )
 
@@ -108,6 +125,13 @@ class TpLevel(BaseModel):
 
 class TrailingCfg(BaseModel):
     enabled: bool = True
+    # ATR-based activation: when set AND the position recorded an entry-time
+    # ATR(1h), trailing activates once favorable excursion reaches
+    # `activate_at_atr_mult * entry_atr / entry_price`. Set to None to use
+    # only the fixed `activate_at_pct` below.
+    activate_at_atr_mult: float | None = 1.0
+    # Fallback fixed-pct activation. Used when ATR is unavailable at entry
+    # time, or when `activate_at_atr_mult` is None.
     activate_at_pct: float = 0.015
     # >0 means lock in at least this much profit when trailing engages.
     # 0.0 = move SL to break-even only.
@@ -195,14 +219,34 @@ class RiskCfg(BaseModel):
     # BTC+ETH+SOL is effectively 3x exposure on the same beta.
     max_concurrent_positions: int = 2
 
-    # Optional per-direction cap. If set (e.g. 1) at most that many LONGs and
-    # at most that many SHORTs may be open at the same time. None disables.
+    # Optional per-direction cap applied **only** within a correlation group
+    # listed in `correlated_groups`. If set (e.g. 1) at most that many LONGs
+    # (and that many SHORTs) may be open simultaneously *within the same
+    # group*. Symbols outside every group are not affected. None disables.
     max_per_direction: int | None = None
 
-    # Daily loss circuit breaker: after this many SL_HIT exits in the current
-    # UTC day, refuse to open new positions until UTC midnight. Set to None
-    # to disable.
-    max_daily_losses: int | None = 3
+    # Groups of highly correlated symbols. `max_per_direction` is enforced
+    # per group, not globally — so e.g. with `[["BTCUSDT", "ETHUSDT"]]` and
+    # `max_per_direction: 1`, you can hold at most one LONG between BTC and
+    # ETH while SOLUSDT (outside any group) is unrestricted. Empty list
+    # disables the per-group logic entirely (max_per_direction has no
+    # effect when no group matches a candidate's symbol).
+    correlated_groups: list[list[str]] = Field(default_factory=list)
+
+    # Cooldown (seconds) after a virtual position fully closes on a given
+    # (symbol, direction). Blocks an immediate re-entry on the same side
+    # when the metric is still oscillating around its threshold. Observed
+    # in logs as <30-minute re-entries that repeated the same losing setup.
+    # 0 disables.
+    post_exit_cooldown_seconds: int = 7200  # 2h
+
+    # How often the entry path is allowed to emit the same skip-reason log
+    # line for the same (symbol, direction). Stops `skipping ... at
+    # max_concurrent_positions` from filling stdout every poll cycle when a
+    # condition persists for hours. The reason key still updates whenever
+    # the actual gate changes (e.g. cooldown -> max_concurrent), so state
+    # transitions are visible immediately.
+    skip_log_interval_seconds: int = 1800  # 30 min
 
 
 class NotifierCfg(BaseModel):
