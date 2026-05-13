@@ -91,9 +91,20 @@ class Position:
     # Trailing tracking.
     best_favorable_pct: float = 0.0  # max favorable excursion since entry
 
-    # Confluence: was this opened by 2+ distinct rules in the same direction?
-    # Used by the alert formatter (STRONG marker) and stats (per-strength rates).
+    # Confluence: was this opened with 2+ *non-funding* distinct rules in
+    # the same direction within the confluence window? Used by the alert
+    # formatter (STRONG marker) and stats (per-strength rates).
     strong: bool = False
+
+    # Cross-snapshot signal identifier. Stable for the lifetime of one
+    # candidate (alert / block / open / close all share the same id), so
+    # rows in alerts.jsonl / positions.jsonl / blocked.jsonl can be joined.
+    signal_id: str | None = None
+
+    # ATR(1h) at entry time, used by ATR-based trailing-stop activation. None
+    # when ATR was unavailable on the entry snapshot (rare; only when 1h
+    # klines failed to load).
+    entry_atr_1h: float | None = None
 
     def to_log_dict(self) -> dict:
         d = {
@@ -114,6 +125,8 @@ class Position:
             "close_price": self.close_price,
             "best_favorable_pct": self.best_favorable_pct,
             "strong": self.strong,
+            "signal_id": self.signal_id,
+            "entry_atr_1h": self.entry_atr_1h,
         }
         return d
 

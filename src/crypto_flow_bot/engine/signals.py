@@ -2,15 +2,30 @@
 
 A `SignalCandidate` is produced when one or more rules fire on a snapshot.
 Multiple rules for the same direction are merged into a single candidate
-(carrying a list of fired rule names so the alert text can mention all of them).
+(carrying the list of rules fired *now* and the union of rules seen in a
+short rolling window — the *confluence window*).
+
+The confluence window lets a slow trigger (e.g. `funding_extreme`, which can
+stay elevated for hours) team up with a faster trigger (e.g. `liq_cascade` or
+`oi_surge`) that arrived a few minutes earlier. The signal engine is
+otherwise stateless; the optional `ConfluenceCache` holds the rolling
+per-(symbol, direction) history of rule fires for cross-snapshot confluence.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import uuid
+from collections import defaultdict, deque
+from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 
 from crypto_flow_bot.config import Config
 from crypto_flow_bot.engine.models import Direction, Snapshot
+
+# Rule names that are NOT allowed to open a position alone (no other rule in
+# the confluence window). When `funding_extreme_requires_confirmation` is on
+# in config, a candidate built only from these rules is dropped.
+CONFIRMATION_REQUIRED_RULES: frozenset[str] = frozenset({"funding_extreme"})
 
 
 @dataclass
@@ -19,12 +34,55 @@ class FiredRule:
     description: str  # human-readable, e.g. "funding +0.13%"
 
 
+class ConfluenceCache:
+    """Bounded rolling history of rule fires per (symbol, direction).
+
+    Holds entries no older than `window_minutes`. Used by `evaluate` to
+    decide whether a funding-only snapshot has a confirming rule in the
+    recent past (entry allowed) or stands alone (entry blocked when the
+    funding-confirmation gate is on).
+
+    Lives in memory only — restart wipes it, which is acceptable: the
+    cache catches up on the next snapshot.
+    """
+
+    def __init__(self, window_minutes: int) -> None:
+        self.window_minutes = window_minutes
+        self._fires: dict[tuple[str, Direction], deque[tuple[datetime, str]]] = defaultdict(deque)
+
+    def _evict_old(self, key: tuple[str, Direction], now: datetime) -> None:
+        if self.window_minutes <= 0:
+            return
+        cutoff = now - timedelta(minutes=self.window_minutes)
+        q = self._fires[key]
+        while q and q[0][0] < cutoff:
+            q.popleft()
+
+    def record(self, symbol: str, direction: Direction, rule_name: str, now: datetime) -> None:
+        key = (symbol, direction)
+        self._fires[key].append((now, rule_name))
+        self._evict_old(key, now)
+
+    def recent_names(self, symbol: str, direction: Direction, now: datetime) -> set[str]:
+        key = (symbol, direction)
+        self._evict_old(key, now)
+        return {name for _, name in self._fires.get(key, ())}
+
+
 @dataclass
 class SignalCandidate:
     symbol: str
     direction: Direction
-    fired_rules: list[FiredRule]
+    fired_rules: list[FiredRule]  # rules fired on the *current* snapshot
     snapshot: Snapshot
+    # Union of rule names fired on this snapshot AND any prior snapshot
+    # within the configured confluence window for this (symbol, direction).
+    # Always at least equal to {r.name for r in fired_rules}.
+    confluence_window_rules: set[str] = field(default_factory=set)
+    # Stable id for this candidate. Same id rides through the entry alert
+    # / blocked-event log / position lifecycle so rows in different jsonl
+    # files can be joined.
+    signal_id: str = field(default_factory=lambda: str(uuid.uuid4())[:8])
 
     @property
     def reason_label(self) -> str:
@@ -32,22 +90,36 @@ class SignalCandidate:
 
     @property
     def is_strong(self) -> bool:
-        """Confluence: 2+ distinct rules fired in the same direction.
+        """Confluence: 2+ distinct *non-funding* rules fired in the same
+        direction within the confluence window.
 
-        These setups historically have higher EV — the bot uses a wider TP2
-        and shows a 'STRONG' marker in the entry alert.
+        Why exclude funding_extreme: funding is a slow context indicator
+        (active for hours/days) — pairing it with one fast trigger is the
+        normal entry condition, not a confluence bonus. STRONG should mark
+        genuinely rare moments when two *fast* triggers agree.
         """
-        unique_names = {r.name for r in self.fired_rules}
-        return len(unique_names) >= 2
+        non_funding = self.confluence_window_rules - CONFIRMATION_REQUIRED_RULES
+        return len(non_funding) >= 2
 
 
-def evaluate(snap: Snapshot, cfg: Config) -> list[SignalCandidate]:
-    """Return zero or more entry candidates for this snapshot. One per direction at most."""
+def evaluate(
+    snap: Snapshot,
+    cfg: Config,
+    cache: ConfluenceCache | None = None,
+    now: datetime | None = None,
+) -> list[SignalCandidate]:
+    """Return zero or more entry candidates for this snapshot.
+
+    At most one candidate per direction. When `cache` is provided, it is
+    updated with the rules fired on this snapshot and used to compute the
+    confluence-window set on returned candidates. When `cache` is None,
+    confluence is snapshot-only (legacy behavior).
+    """
     long_rules: list[FiredRule] = []
     short_rules: list[FiredRule] = []
 
-    # Per-symbol override resolution: for BTC/ETH/SOL we want different
-    # thresholds (a single global value either spams alts or starves majors).
+    # Per-symbol override resolution: BTC/ETH/SOL want different thresholds
+    # (a single global value either spams alts or starves majors).
     sig = cfg.signals.for_symbol(snap.symbol)
 
     if sig.funding_extreme.enabled and snap.funding_rate is not None:
@@ -144,9 +216,45 @@ def evaluate(snap: Snapshot, cfg: Config) -> list[SignalCandidate]:
         elif snap.price < snap.ema50_1h:
             long_rules = [r for r in long_rules if r.name == "liq_cascade"]
 
+    if now is None:
+        now = snap.ts if snap.ts is not None else datetime.now(tz=UTC)
+
     out: list[SignalCandidate] = []
-    if long_rules:
-        out.append(SignalCandidate(symbol=snap.symbol, direction=Direction.LONG, fired_rules=long_rules, snapshot=snap))
-    if short_rules:
-        out.append(SignalCandidate(symbol=snap.symbol, direction=Direction.SHORT, fired_rules=short_rules, snapshot=snap))
+    for direction, rules in (
+        (Direction.LONG, long_rules),
+        (Direction.SHORT, short_rules),
+    ):
+        if not rules:
+            continue
+
+        # Update the rolling confluence cache with rules fired on this snap.
+        if cache is not None:
+            for r in rules:
+                cache.record(snap.symbol, direction, r.name, now)
+
+        # Window-wide rule-name set always includes the rules fired now.
+        window_names: set[str] = {r.name for r in rules}
+        if cache is not None:
+            window_names |= cache.recent_names(snap.symbol, direction, now)
+
+        # Funding-needs-confirmation gate: a candidate built only from rules
+        # in CONFIRMATION_REQUIRED_RULES (e.g. funding_extreme alone) is
+        # dropped unless another rule has fired in the same direction within
+        # the confluence window.
+        if sig.funding_extreme_requires_confirmation:
+            confirming = window_names - CONFIRMATION_REQUIRED_RULES
+            if not confirming:
+                # Every rule in window needs a confirming partner; we don't
+                # have one yet. Drop the candidate.
+                continue
+
+        out.append(
+            SignalCandidate(
+                symbol=snap.symbol,
+                direction=direction,
+                fired_rules=rules,
+                snapshot=snap,
+                confluence_window_rules=window_names,
+            )
+        )
     return out
