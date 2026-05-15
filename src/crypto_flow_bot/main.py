@@ -19,7 +19,7 @@ from crypto_flow_bot.data.liquidations import LiquidationStream
 from crypto_flow_bot.engine.exits import evaluate_exit
 from crypto_flow_bot.engine.funding_history import FundingHistoryCache
 from crypto_flow_bot.engine.models import Direction, Snapshot
-from crypto_flow_bot.engine.signals import ConfluenceCache, evaluate
+from crypto_flow_bot.engine.signals import ConfluenceCache
 from crypto_flow_bot.engine.state import StateStore
 from crypto_flow_bot.log.store import JsonlLogger
 from crypto_flow_bot.notify.stats import (
@@ -31,8 +31,6 @@ from crypto_flow_bot.notify.stats import (
 )
 from crypto_flow_bot.notify.telegram import (
     TelegramNotifier,
-    format_entry_alert,
-    format_exit_alert,
     format_heartbeat,
     format_startup,
 )
