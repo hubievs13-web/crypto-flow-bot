@@ -17,6 +17,7 @@ from crypto_flow_bot.config import Config, load_config
 from crypto_flow_bot.data.binance import BinanceClient, build_snapshot
 from crypto_flow_bot.data.liquidations import LiquidationStream
 from crypto_flow_bot.engine.exits import evaluate_exit
+from crypto_flow_bot.engine.funding_history import FundingHistoryCache
 from crypto_flow_bot.engine.models import Direction, Snapshot
 from crypto_flow_bot.engine.signals import ConfluenceCache, evaluate
 from crypto_flow_bot.engine.state import StateStore
@@ -111,11 +112,21 @@ class Bot:
         self.confluence_cache = ConfluenceCache(
             window_minutes=cfg.signals.confluence_window_minutes,
         )
+        # Per-symbol rolling funding-rate history. Backfilled at startup from
+        # /fapi/v1/fundingRate (~30 days) and updated on every poll. Drives
+        # the auto-mode z-score / percentile path of `funding_extreme`.
+        # Sized for ~333 days of headroom (1000 pts × 8h cycles).
+        self.funding_history = FundingHistoryCache(max_points=1000)
 
     def request_stop(self) -> None:
         self._stop.set()
 
     async def run(self) -> None:
+        # Backfill funding history before the first poll so the auto-mode
+        # `funding_extreme` rule has data to work with on tick #1. Failures
+        # here are non-fatal: the per-symbol fall-through to fixed thresholds
+        # keeps alerts flowing even with an empty cache.
+        await self._backfill_funding_history()
         self.liq_stream.start()
         try:
             await asyncio.gather(
@@ -128,6 +139,22 @@ class Bot:
             )
         finally:
             await self.liq_stream.stop()
+
+    async def _backfill_funding_history(self) -> None:
+        """Seed `self.funding_history` from Binance for every watched symbol.
+
+        Fired once at startup. Each call returns up to 1000 8h funding points
+        (~333 days). We fetch the full window so future lookback knobs (e.g.
+        90-day percentile) can be raised without redeploying.
+        """
+        for symbol in self.cfg.symbols:
+            try:
+                points = await self.client.funding_rate_history(symbol, limit=1000)
+            except Exception as e:
+                log.warning("funding history backfill for %s failed: %s", symbol, e)
+                continue
+            n = self.funding_history.backfill(symbol, points)
+            log.info("funding history backfilled for %s: %d points", symbol, n)
 
     # ---------- loops ----------
 
@@ -148,6 +175,7 @@ class Bot:
                 except Exception as e:
                     log.warning("snapshot for %s failed: %s", symbol, e)
                     continue
+                self._augment_with_funding_stats(snap)
                 self._last_full_snapshot[symbol] = snap
                 await self.logger.write_snapshot(snap)
                 await self._handle_entry_signals(snap)
@@ -211,6 +239,7 @@ class Bot:
                 except Exception as e:
                     log.warning("liq fast-path snapshot for %s failed: %s", symbol, e)
                     continue
+                self._augment_with_funding_stats(snap)
                 self._last_full_snapshot[symbol] = snap
                 await self.logger.write_snapshot(snap)
                 await self._handle_entry_signals(snap)
@@ -359,6 +388,44 @@ class Bot:
                 continue
             self.state.last_stats_digest_week = week_key
             self.state.save()
+
+    # ---------- snapshot augmentation ----------
+
+    def _augment_with_funding_stats(self, snap: Snapshot) -> None:
+        """Push the latest funding rate into the cache and stamp z-score/percentile.
+
+        Mutates `snap.funding_rate_zscore` and `snap.funding_rate_percentile`
+        in place so they land in `snapshots.jsonl` next to the value that
+        produced them. The cache's `update()` is a no-op when the same 8h
+        funding value is seen twice (deduped by timestamp), so calling this
+        every 60s poll is safe -- only the first observation of a new 8h
+        cycle actually grows the history.
+
+        When the per-symbol cache hasn't yet collected
+        `cfg.funding_extreme.min_history_points` observations both stats
+        return None and the `funding_extreme` rule falls back to its
+        fixed thresholds.
+        """
+        if snap.funding_rate is None or snap.funding_rate_ts is None:
+            return
+        self.funding_history.update(snap.symbol, snap.funding_rate_ts, snap.funding_rate)
+        cfg = self.cfg.signals.for_symbol(snap.symbol).funding_extreme
+        if cfg.mode != "auto":
+            return
+        snap.funding_rate_zscore = self.funding_history.zscore(
+            symbol=snap.symbol,
+            value=snap.funding_rate,
+            now=snap.ts,
+            lookback_days=cfg.zscore_lookback_days,
+            min_points=cfg.min_history_points,
+        )
+        snap.funding_rate_percentile = self.funding_history.percentile_rank(
+            symbol=snap.symbol,
+            value=snap.funding_rate,
+            now=snap.ts,
+            lookback_days=cfg.pct_lookback_days,
+            min_points=cfg.min_history_points,
+        )
 
     # ---------- entry / exit handling ----------
 

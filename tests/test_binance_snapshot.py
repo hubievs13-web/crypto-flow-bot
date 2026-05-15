@@ -234,3 +234,52 @@ async def test_build_snapshot_to_log_dict_is_json_serializable():
     snap = await build_snapshot(client, liq_stream, "BTCUSDT", oi_window_minutes=60)
     # Should not raise.
     json.dumps(snap.to_log_dict())
+
+
+# ─── funding_rate_history parser ────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_funding_rate_history_parses_and_sorts():
+    """The Binance /fapi/v1/fundingRate response is a list of dicts with
+    fundingTime (ms epoch) and fundingRate (str). The client must convert
+    those to (datetime, float) and return them chronologically sorted."""
+    from crypto_flow_bot.data.binance import BinanceClient
+
+    client = BinanceClient()
+    payload = [
+        # Intentionally not in chronological order to verify the defensive sort.
+        {"symbol": "BTCUSDT", "fundingTime": 1_700_000_000_000, "fundingRate": "0.0001"},
+        {"symbol": "BTCUSDT", "fundingTime": 1_700_028_800_000, "fundingRate": "0.0003"},
+        {"symbol": "BTCUSDT", "fundingTime": 1_700_014_400_000, "fundingRate": "0.0002"},
+    ]
+    client._get = AsyncMock(return_value=payload)  # type: ignore[method-assign]
+
+    out = await client.funding_rate_history("BTCUSDT", limit=3)
+
+    assert len(out) == 3
+    # Sorted oldest -> newest.
+    assert out[0][0] < out[1][0] < out[2][0]
+    assert [rate for _ts, rate in out] == [0.0001, 0.0002, 0.0003]
+    # Tz-aware UTC.
+    assert all(ts.tzinfo == UTC for ts, _rate in out)
+
+
+@pytest.mark.asyncio
+async def test_funding_rate_history_skips_malformed_rows():
+    """Defensive: a single bad row from upstream must not nuke the whole list."""
+    from crypto_flow_bot.data.binance import BinanceClient
+
+    client = BinanceClient()
+    payload = [
+        {"symbol": "BTCUSDT", "fundingTime": 1_700_000_000_000, "fundingRate": "0.0001"},
+        {"symbol": "BTCUSDT"},  # missing both keys
+        {"symbol": "BTCUSDT", "fundingTime": "garbage", "fundingRate": "0.0002"},
+        {"symbol": "BTCUSDT", "fundingTime": 1_700_028_800_000, "fundingRate": "0.0003"},
+    ]
+    client._get = AsyncMock(return_value=payload)  # type: ignore[method-assign]
+
+    out = await client.funding_rate_history("BTCUSDT")
+
+    assert len(out) == 2
+    assert [rate for _ts, rate in out] == [0.0001, 0.0003]
