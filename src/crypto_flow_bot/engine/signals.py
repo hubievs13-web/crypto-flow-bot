@@ -20,7 +20,7 @@ from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
-from crypto_flow_bot.config import Config, FreshnessCfg
+from crypto_flow_bot.config import Config, FreshnessCfg, FundingExtremeCfg
 from crypto_flow_bot.engine.models import Direction, Snapshot
 
 log = logging.getLogger(__name__)
@@ -47,6 +47,79 @@ def _metric_is_stale(
         return False
     age = (snap_ts - metric_ts).total_seconds()
     return age > max_age_seconds
+
+
+def _evaluate_funding_extreme(
+    snap: Snapshot,
+    cfg: FundingExtremeCfg,
+) -> tuple[Direction, FiredRule] | None:
+    """Decide whether `funding_extreme` fires on this snapshot.
+
+    Two-mode logic:
+        - "fixed": the original behavior. Cross the static threshold and fire.
+        - "auto": prefer the per-symbol distributional view. The snapshot
+          carries `funding_rate_zscore` / `funding_rate_percentile` already
+          computed by the bot's poll loop (via FundingHistoryCache). When at
+          least one of those is populated we honor them and ignore the static
+          thresholds. When the cache hasn't yet collected `min_history_points`
+          observations both fields are None and we fall back to the fixed
+          thresholds -- the bot keeps emitting alerts even on day one after
+          a fresh deploy.
+
+    Returns:
+        (Direction, FiredRule) when the rule fires, None otherwise.
+    """
+    if snap.funding_rate is None:
+        return None
+    f = snap.funding_rate
+
+    if cfg.mode == "auto":
+        z = snap.funding_rate_zscore
+        p = snap.funding_rate_percentile
+        if z is not None or p is not None:
+            # SHORT side: longs are overheated (high positive funding).
+            short_hit: list[str] = []
+            if z is not None and z >= cfg.zscore_high_abs:
+                short_hit.append(f"z {z:+.2f}")
+            if p is not None and p >= cfg.pct_high:
+                short_hit.append(f"p{p * 100:.0f} / {cfg.pct_lookback_days}d")
+            if short_hit:
+                desc = (
+                    f"funding {f * 100:+.3f}% extreme ({', '.join(short_hit)})"
+                )
+                return Direction.SHORT, FiredRule(name="funding_extreme", description=desc)
+
+            # LONG side: shorts are overheated (deeply negative funding).
+            long_hit: list[str] = []
+            if z is not None and z <= -cfg.zscore_high_abs:
+                long_hit.append(f"z {z:+.2f}")
+            if p is not None and p <= cfg.pct_low:
+                long_hit.append(f"p{p * 100:.0f} / {cfg.pct_lookback_days}d")
+            if long_hit:
+                desc = (
+                    f"funding {f * 100:+.3f}% extreme ({', '.join(long_hit)})"
+                )
+                return Direction.LONG, FiredRule(name="funding_extreme", description=desc)
+
+            # Auto path computed stats and they didn't cross -- do NOT
+            # silently fall back to fixed thresholds. That would let the
+            # rule fire when the percentile rank says "normal".
+            return None
+
+        # Auto mode but cache cold -- fall through to fixed-threshold logic.
+
+    # Fixed-threshold path (legacy behavior; also the cold-start fallback).
+    if f >= cfg.long_overheated_above:
+        return Direction.SHORT, FiredRule(
+            name="funding_extreme",
+            description=f"funding {f * 100:+.3f}% (longs overheated)",
+        )
+    if f <= cfg.short_overheated_below:
+        return Direction.LONG, FiredRule(
+            name="funding_extreme",
+            description=f"funding {f * 100:+.3f}% (shorts overheated)",
+        )
+    return None
 
 
 def _check_freshness(
@@ -181,15 +254,13 @@ def evaluate(
         )
 
     if sig.funding_extreme.enabled and snap.funding_rate is not None and not stale["funding_extreme"]:
-        f = snap.funding_rate
-        if f >= sig.funding_extreme.long_overheated_above:
-            short_rules.append(
-                FiredRule(name="funding_extreme", description=f"funding {f * 100:+.3f}% (longs overheated)")
-            )
-        elif f <= sig.funding_extreme.short_overheated_below:
-            long_rules.append(
-                FiredRule(name="funding_extreme", description=f"funding {f * 100:+.3f}% (shorts overheated)")
-            )
+        funding_fired = _evaluate_funding_extreme(snap, sig.funding_extreme)
+        if funding_fired is not None:
+            direction, rule = funding_fired
+            if direction is Direction.SHORT:
+                short_rules.append(rule)
+            else:
+                long_rules.append(rule)
 
     if (
         sig.oi_surge.enabled

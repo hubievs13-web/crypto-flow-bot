@@ -64,8 +64,21 @@ signals:
 
   funding_extreme:
     enabled: true
+    # ─ Static thresholds (fallback for cold start and `mode: fixed`) ──────
     long_overheated_above: 0.00008   # +0.008% / 8h (was 0.010%)
     short_overheated_below: -0.00008 # -0.008% / 8h (was -0.010%)
+    # ─ Auto-mode (#8, #9 from improvement doc) ───────────────────────────
+    # When mode=auto and the per-symbol FundingHistoryCache has at least
+    # `min_history_points` observations, the rule fires on EITHER a
+    # |z-score| crossing OR a percentile-rank crossing. Below the minimum
+    # we fall back to the fixed thresholds above.
+    mode: auto
+    zscore_lookback_days: 14
+    zscore_high_abs: 2.0
+    pct_lookback_days: 30
+    pct_high: 0.95
+    pct_low: 0.05
+    min_history_points: 20
 
   oi_surge:
     enabled: true

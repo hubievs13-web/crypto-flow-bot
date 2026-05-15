@@ -73,6 +73,15 @@ class Snapshot:
     open_interest_ts: datetime | None = None
     long_short_ratio_ts: datetime | None = None
 
+    # Funding-rate statistics evaluated against the per-symbol rolling
+    # history (FundingHistoryCache). Populated by the bot's poll loop before
+    # passing the snapshot into `signals.evaluate`. None means either the
+    # history was too thin (< min_history_points) or auto mode was disabled.
+    # Surfaced primarily so snapshots.jsonl carries the same numbers the
+    # signal rule used at decision time -- handy for post-hoc analysis.
+    funding_rate_zscore: float | None = None
+    funding_rate_percentile: float | None = None
+
     def to_log_dict(self) -> dict:
         d = asdict(self)
         d["ts"] = self.ts.isoformat()

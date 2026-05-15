@@ -52,6 +52,40 @@ class BinanceClient:
         assert isinstance(data, dict)
         return float(data["lastFundingRate"])
 
+    async def funding_rate_history(
+        self,
+        symbol: str,
+        limit: int = 1000,
+    ) -> list[tuple[datetime, float]]:
+        """Historical funding rates (most recent last), up to 1000 points.
+
+        Each point covers an 8h funding cycle, so limit=1000 ~ 333 days of
+        history. Returns a chronologically-ordered list of (funding_time, rate)
+        tuples; consumers (FundingHistoryCache) just push these straight into
+        their rolling window.
+
+        Endpoint: GET /fapi/v1/fundingRate
+        Response: list of dicts with {symbol, fundingTime (ms), fundingRate (str)}.
+        """
+        # API caps `limit` at 1000; pass-through is fine.
+        data = await self._get(
+            "/fapi/v1/fundingRate",
+            {"symbol": symbol, "limit": limit},
+        )
+        assert isinstance(data, list)
+        out: list[tuple[datetime, float]] = []
+        for row in data:
+            try:
+                ts = datetime.fromtimestamp(int(row["fundingTime"]) / 1000.0, tz=UTC)
+                rate = float(row["fundingRate"])
+            except (KeyError, ValueError, TypeError):
+                continue
+            out.append((ts, rate))
+        # Binance returns oldest-first, but sort defensively in case that
+        # ever changes silently.
+        out.sort(key=lambda t: t[0])
+        return out
+
     async def mark_price(self, symbol: str) -> float:
         data = await self._get("/fapi/v1/premiumIndex", {"symbol": symbol})
         assert isinstance(data, dict)

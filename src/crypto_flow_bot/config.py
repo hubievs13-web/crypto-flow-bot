@@ -10,9 +10,44 @@ from pydantic import BaseModel, Field, field_validator
 
 
 class FundingExtremeCfg(BaseModel):
+    """Funding-rate extreme detection.
+
+    Two modes:
+        - "fixed": original behavior. Fires when funding crosses the
+          `long_overheated_above` / `short_overheated_below` thresholds.
+          Thresholds are necessarily calibrated against a single observation
+          window and drift out of date as the regime shifts.
+        - "auto": uses `FundingHistoryCache` to evaluate the current funding
+          against the symbol's own recent distribution. Fires when EITHER
+          the z-score (`zscore_lookback_days` window) crosses
+          `zscore_high_abs`, OR the percentile rank (`pct_lookback_days`
+          window) crosses `pct_high` / `pct_low`. Falls back to the fixed
+          thresholds while the cache has fewer than `min_history_points`
+          observations (cold start on a freshly-deployed symbol).
+
+    The fixed thresholds are kept around as a fallback even in "auto" mode
+    so the bot still emits alerts on the very first day after deploy.
+    """
+
     enabled: bool = True
     long_overheated_above: float = 0.0008
     short_overheated_below: float = -0.0005
+
+    # "auto" -- prefer percentile/z-score; "fixed" -- only thresholds.
+    mode: str = "auto"
+
+    # z-score knobs
+    zscore_lookback_days: int = 14
+    zscore_high_abs: float = 2.0  # |z| >= this fires
+
+    # Percentile knobs (rank in [0, 1])
+    pct_lookback_days: int = 30
+    pct_high: float = 0.95  # rank >= 0.95 -> "longs overheated" (SHORT)
+    pct_low: float = 0.05   # rank <= 0.05 -> "shorts overheated" (LONG)
+
+    # Minimum stored observations before "auto" engages. 8h cycles, so
+    # 20 ≈ 6.7 days of history -- enough to compute a meaningful mean/std.
+    min_history_points: int = 20
 
 
 class OiSurgeCfg(BaseModel):
