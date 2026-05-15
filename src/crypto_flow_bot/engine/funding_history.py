@@ -103,7 +103,12 @@ class FundingHistoryCache:
         # Population variance is fine here -- we're not doing inferential
         # statistics, just normalizing a single observation.
         variance = sum((x - mean) ** 2 for x in window) / len(window)
-        if variance <= 0:
+        # Treat a numerically-tiny variance as zero. Python 3.11's `sum`
+        # is not Kahan-summed and a flat window of 0.0001 values produces
+        # ~1e-39 of float noise (vs. exact 0 on 3.12). Funding rates are
+        # ~1e-4 in magnitude, so any *meaningful* variance is >= 1e-14;
+        # 1e-24 is a safe boundary between "flat" and "real spread".
+        if variance < 1e-24:
             return None
         return (value - mean) / math.sqrt(variance)
 
