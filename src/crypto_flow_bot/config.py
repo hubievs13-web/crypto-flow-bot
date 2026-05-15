@@ -55,6 +55,15 @@ class OiSurgeCfg(BaseModel):
     window_minutes: int = 60
     pct_change_threshold: float = 0.05
     require_price_aligned: bool = True
+    require_healthy: bool = True
+    quality_epsilon_pct: float = 0.0005
+
+
+class TakerConfirmationCfg(BaseModel):
+    enabled: bool = True
+    dominance_threshold: float = 0.55
+    cvd_window_bars: int = 6
+    cvd_alignment_required: bool = False
 
 
 class LsrExtremeCfg(BaseModel):
@@ -141,6 +150,7 @@ class SignalsCfg(BaseModel):
     oi_surge: OiSurgeCfg = Field(default_factory=OiSurgeCfg)
     lsr_extreme: LsrExtremeCfg = Field(default_factory=LsrExtremeCfg)
     liq_cascade: LiqCascadeCfg = Field(default_factory=LiqCascadeCfg)
+    taker_confirmation: TakerConfirmationCfg = Field(default_factory=TakerConfirmationCfg)
     trend_filter: TrendFilterCfg = Field(default_factory=TrendFilterCfg)
     freshness: FreshnessCfg = Field(default_factory=FreshnessCfg)
 
@@ -177,6 +187,7 @@ class SignalsCfg(BaseModel):
             oi_surge=ov.oi_surge or self.oi_surge,
             lsr_extreme=ov.lsr_extreme or self.lsr_extreme,
             liq_cascade=ov.liq_cascade or self.liq_cascade,
+            taker_confirmation=self.taker_confirmation,
             trend_filter=self.trend_filter,
             freshness=self.freshness,
             confluence_window_minutes=self.confluence_window_minutes,

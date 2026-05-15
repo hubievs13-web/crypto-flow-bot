@@ -203,6 +203,7 @@ class SignalCandidate:
     # / blocked-event log / position lifecycle so rows in different jsonl
     # files can be joined.
     signal_id: str = field(default_factory=lambda: str(uuid.uuid4())[:8])
+    strong_override: bool | None = None
 
     @property
     def reason_label(self) -> str:
@@ -218,6 +219,8 @@ class SignalCandidate:
         normal entry condition, not a confluence bonus. STRONG should mark
         genuinely rare moments when two *fast* triggers agree.
         """
+        if self.strong_override is not None:
+            return self.strong_override
         non_funding = self.confluence_window_rules - CONFIRMATION_REQUIRED_RULES
         return len(non_funding) >= 2
 
@@ -278,8 +281,31 @@ def evaluate(
         #   OI ↓ + price ↓ -> long capitulation (skip — too late)
         # Without alignment requirement we fall back to OI sign alone (noisy).
         if sig.oi_surge.require_price_aligned:
+            quality = snap.oi_quality
             price_pct = snap.price_change_pct_1h
-            if price_pct is not None and oi_pct > 0:
+            if sig.oi_surge.require_healthy and (
+                quality is None or quality.startswith("dangerous_")
+            ):
+                log.info("oi_surge: skipping %s due to oi_quality=%s", snap.symbol, quality)
+            elif quality == "healthy_short" and price_pct is not None:
+                short_rules.append(
+                    FiredRule(
+                        name="oi_surge",
+                        description=f"OI +{oi_pct * 100:.1f}% + price {price_pct * 100:+.2f}% / 1h (fresh longs)",
+                    )
+                )
+            elif quality == "healthy_long" and price_pct is not None:
+                long_rules.append(
+                    FiredRule(
+                        name="oi_surge",
+                        description=f"OI +{oi_pct * 100:.1f}% + price {price_pct * 100:+.2f}% / 1h (fresh shorts)",
+                    )
+                )
+            elif (
+                not sig.oi_surge.require_healthy
+                and price_pct is not None
+                and oi_pct > 0
+            ):
                 if price_pct > 0:
                     long_rules.append(
                         FiredRule(
@@ -387,4 +413,21 @@ def evaluate(
                 confluence_window_rules=window_names,
             )
         )
+    if sig.taker_confirmation.enabled:
+        for cand in out:
+            if any(r.name == "liq_cascade" for r in cand.fired_rules):
+                continue
+            buy_dominance = cand.snapshot.taker_buy_dominance_1h
+            if buy_dominance is None:
+                continue
+            side_dominance = buy_dominance if cand.direction is Direction.LONG else 1.0 - buy_dominance
+            if side_dominance >= sig.taker_confirmation.dominance_threshold:
+                continue
+            cand.strong_override = False
+            cand.fired_rules.append(
+                FiredRule(
+                    name="taker_confirmation",
+                    description=f"taker n/c ({side_dominance * 100:.1f}%)",
+                )
+            )
     return out

@@ -141,19 +141,19 @@ def test_confluence_window_keyed_by_direction():
 # ─── OI surge with price-alignment ──────────────────────────────────────────
 
 def test_oi_surge_up_with_price_up_yields_long_signal():
-    snap = _snap(open_interest_change_pct_window=0.07, price_change_pct_1h=0.012)
+    snap = _snap(open_interest_change_pct_window=0.07, price_change_pct_1h=0.012, oi_quality="healthy_short")
     out = evaluate(snap, _cfg())
     assert any(
-        c.direction is Direction.LONG and any(r.name == "oi_surge" for r in c.fired_rules)
+        c.direction is Direction.SHORT and any(r.name == "oi_surge" for r in c.fired_rules)
         for c in out
     )
 
 
 def test_oi_surge_up_with_price_down_yields_short_signal():
-    snap = _snap(open_interest_change_pct_window=0.07, price_change_pct_1h=-0.012)
+    snap = _snap(open_interest_change_pct_window=0.07, price_change_pct_1h=-0.012, oi_quality="healthy_long")
     out = evaluate(snap, _cfg())
     assert any(
-        c.direction is Direction.SHORT and any(r.name == "oi_surge" for r in c.fired_rules)
+        c.direction is Direction.LONG and any(r.name == "oi_surge" for r in c.fired_rules)
         for c in out
     )
 

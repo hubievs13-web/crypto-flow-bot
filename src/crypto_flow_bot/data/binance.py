@@ -234,11 +234,60 @@ def _taker_quote_volumes(klines: list[list]) -> tuple[float | None, float | None
     return buy, sell
 
 
+def _taker_buy_dominance(buy: float | None, sell: float | None) -> float | None:
+    if buy is None or sell is None:
+        return None
+    total = buy + sell
+    if total <= 0:
+        return None
+    return buy / total
+
+
+def _cvd_window_usd(klines: list[list], window_bars: int) -> float | None:
+    if window_bars <= 0 or len(klines) < 2:
+        return None
+    closed = klines[:-1]
+    if not closed:
+        return None
+    tail = closed[-window_bars:]
+    total = 0.0
+    for bar in tail:
+        try:
+            quote = float(bar[7])
+            taker_buy_quote = float(bar[10])
+        except (IndexError, ValueError, TypeError):
+            return None
+        total += 2.0 * taker_buy_quote - quote
+    return total
+
+
+def _classify_oi_quality(
+    price_change_pct_1h: float | None,
+    open_interest_change_pct_window: float | None,
+    epsilon: float,
+) -> str | None:
+    if price_change_pct_1h is None or open_interest_change_pct_window is None:
+        return None
+    if abs(price_change_pct_1h) < epsilon or abs(open_interest_change_pct_window) < epsilon:
+        return None
+    if price_change_pct_1h > 0 and open_interest_change_pct_window > 0:
+        return "healthy_short"
+    if price_change_pct_1h < 0 and open_interest_change_pct_window > 0:
+        return "healthy_long"
+    if price_change_pct_1h > 0 and open_interest_change_pct_window < 0:
+        return "dangerous_long"
+    if price_change_pct_1h < 0 and open_interest_change_pct_window < 0:
+        return "dangerous_short"
+    return None
+
+
 async def build_snapshot(
     client: BinanceClient,
     liq_stream: LiquidationStream,
     symbol: str,
     oi_window_minutes: int,
+    cvd_window_bars: int = 6,
+    oi_quality_epsilon_pct: float = 0.0005,
     *,
     enable_4h_klines: bool = True,
 ) -> Snapshot:
@@ -279,6 +328,9 @@ async def build_snapshot(
 
     price_change_pct_1h, ema50_1h, atr_1h = _kline_derivatives(klines_1h)
     taker_buy_1h, taker_sell_1h = _taker_quote_volumes(klines_1h)
+    taker_buy_dominance_1h = _taker_buy_dominance(taker_buy_1h, taker_sell_1h)
+    cvd_window_usd = _cvd_window_usd(klines_1h, cvd_window_bars)
+    oi_quality = _classify_oi_quality(price_change_pct_1h, oi_change_pct, oi_quality_epsilon_pct)
 
     price_change_pct_4h: float | None = None
     ema50_4h: float | None = None
@@ -302,6 +354,9 @@ async def build_snapshot(
         atr_1h=atr_1h,
         taker_buy_quote_1h=taker_buy_1h,
         taker_sell_quote_1h=taker_sell_1h,
+        taker_buy_dominance_1h=taker_buy_dominance_1h,
+        cvd_window_usd=cvd_window_usd,
+        oi_quality=oi_quality,
         price_change_pct_4h=price_change_pct_4h,
         ema50_4h=ema50_4h,
         atr_4h=atr_4h,
