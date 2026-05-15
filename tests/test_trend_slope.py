@@ -12,7 +12,7 @@ def _cfg() -> Config:
 
 
 def _snap(**kw):
-    base = dict(symbol="BTCUSDT", ts=datetime.now(tz=UTC), price=100.0)
+    base = {"symbol": "BTCUSDT", "ts": datetime.now(tz=UTC), "price": 100.0}
     base.update(kw)
     return Snapshot(**base)
 

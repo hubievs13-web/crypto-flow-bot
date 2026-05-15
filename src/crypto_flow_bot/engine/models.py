@@ -58,6 +58,9 @@ class Snapshot:
     # confirm aggressor side (LONG needs taker buy dominance, SHORT vice-versa).
     taker_buy_quote_1h: float | None = None
     taker_sell_quote_1h: float | None = None
+    taker_buy_dominance_1h: float | None = None  # buy / (buy + sell) on last closed 1h bar, in [0, 1]
+    cvd_window_usd: float | None = None          # rolling sum of (taker_buy - taker_sell) over last N closed 1h bars
+    oi_quality: str | None = None                # healthy_long/healthy_short/dangerous_long/dangerous_short
 
     # 4h kline derivatives — same shape as the 1h block, used by PR-4 for
     # higher-timeframe trend confirmation and EMA-slope checks. None when the

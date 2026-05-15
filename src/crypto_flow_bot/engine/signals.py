@@ -281,8 +281,31 @@ def evaluate(
         #   OI ↓ + price ↓ -> long capitulation (skip — too late)
         # Without alignment requirement we fall back to OI sign alone (noisy).
         if sig.oi_surge.require_price_aligned:
+            quality = snap.oi_quality
             price_pct = snap.price_change_pct_1h
-            if price_pct is not None and oi_pct > 0:
+            if sig.oi_surge.require_healthy and (
+                quality is None or quality.startswith("dangerous_")
+            ):
+                log.info("oi_surge: skipping %s due to oi_quality=%s", snap.symbol, quality)
+            elif quality == "healthy_short" and price_pct is not None:
+                short_rules.append(
+                    FiredRule(
+                        name="oi_surge",
+                        description=f"OI +{oi_pct * 100:.1f}% + price {price_pct * 100:+.2f}% / 1h (fresh longs)",
+                    )
+                )
+            elif quality == "healthy_long" and price_pct is not None:
+                long_rules.append(
+                    FiredRule(
+                        name="oi_surge",
+                        description=f"OI +{oi_pct * 100:.1f}% + price {price_pct * 100:+.2f}% / 1h (fresh shorts)",
+                    )
+                )
+            elif (
+                not sig.oi_surge.require_healthy
+                and price_pct is not None
+                and oi_pct > 0
+            ):
                 if price_pct > 0:
                     long_rules.append(
                         FiredRule(
@@ -380,6 +403,34 @@ def evaluate(
                 confluence_window_rules=window_names,
             )
         )
+    # ── taker confirmation gate (PR 3, #12-#14) ─────────────────────────
+    # Downgrades is_strong on a candidate whose side does not have taker
+    # aggression confirmation on the last closed 1h bar. Cold-start
+    # (taker_buy_dominance_1h is None) is a pass-through. liq_cascade is
+    # exempt -- a cascade IS aggression by definition.
+    if sig.taker_confirmation.enabled:
+        for cand in out:
+            if any(r.name == "liq_cascade" for r in cand.fired_rules):
+                continue
+            buy_dominance = cand.snapshot.taker_buy_dominance_1h
+            if buy_dominance is None:
+                continue
+            side_dominance = buy_dominance if cand.direction is Direction.LONG else 1.0 - buy_dominance
+            if side_dominance >= sig.taker_confirmation.dominance_threshold:
+                continue
+            cand.strong_override = False
+            cand.fired_rules.append(
+                FiredRule(
+                    name="taker_confirmation",
+                    description=f"taker n/c ({side_dominance * 100:.1f}%)",
+                )
+            )
+
+    # ── trend / slope alignment gate (PR 4, #5, #6) ─────────────────────
+    # 4h trend, 1h slope and 4h slope each downgrade is_strong on a
+    # contradicting candidate, and (when their hard_block_* knob is on)
+    # drop the candidate entirely. Rules listed in tf.exempt_rules
+    # (e.g. liq_cascade) are skipped. Missing data is always pass-through.
     tf = sig.trend_filter
     if not tf.enabled:
         return out
@@ -403,19 +454,33 @@ def evaluate(
         if tf.require_1h_slope_alignment and cand.snapshot.ema50_slope_1h is not None:
             s1 = cand.snapshot.ema50_slope_1h
             if abs(s1) >= tf.slope_min_abs:
-                miss = (cand.direction is Direction.LONG and s1 <= 0) or (cand.direction is Direction.SHORT and s1 >= 0)
+                miss = (cand.direction is Direction.LONG and s1 <= 0) or (
+                    cand.direction is Direction.SHORT and s1 >= 0
+                )
                 if miss:
                     cand.strong_override = False
-                    cand.fired_rules.append(FiredRule(name="slope_1h", description=f"slope_1h n/a ({s1 * 100:+.2f}%/{tf.slope_window_bars}h)"))
+                    cand.fired_rules.append(
+                        FiredRule(
+                            name="slope_1h",
+                            description=f"slope_1h n/a ({s1 * 100:+.2f}%/{tf.slope_window_bars}h)",
+                        )
+                    )
                     if tf.hard_block_on_slope:
                         drop = True
         if tf.require_4h_slope_alignment and cand.snapshot.ema50_slope_4h is not None:
             s4 = cand.snapshot.ema50_slope_4h
             if abs(s4) >= tf.slope_min_abs:
-                miss = (cand.direction is Direction.LONG and s4 <= 0) or (cand.direction is Direction.SHORT and s4 >= 0)
+                miss = (cand.direction is Direction.LONG and s4 <= 0) or (
+                    cand.direction is Direction.SHORT and s4 >= 0
+                )
                 if miss:
                     cand.strong_override = False
-                    cand.fired_rules.append(FiredRule(name="slope_4h", description=f"slope_4h n/a ({s4 * 100:+.2f}%/{tf.slope_window_bars * 4}h)"))
+                    cand.fired_rules.append(
+                        FiredRule(
+                            name="slope_4h",
+                            description=f"slope_4h n/a ({s4 * 100:+.2f}%/{tf.slope_window_bars * 4}h)",
+                        )
+                    )
                     if tf.hard_block_on_slope:
                         drop = True
         if not drop:
