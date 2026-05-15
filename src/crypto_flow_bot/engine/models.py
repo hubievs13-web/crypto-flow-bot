@@ -51,9 +51,37 @@ class Snapshot:
     ema50_1h: float | None = None             # EMA(50) on 1h closes
     atr_1h: float | None = None               # ATR(14) on 1h bars, in absolute price units
 
+    # Taker buy/sell *quote* volume on the last fully-closed 1h bar, in USDT.
+    # Sourced from the Binance kline fields takerBuyQuoteVolume and the bar's
+    # total quote volume — the difference is taker sell. Used by PR-3 to
+    # confirm aggressor side (LONG needs taker buy dominance, SHORT vice-versa).
+    taker_buy_quote_1h: float | None = None
+    taker_sell_quote_1h: float | None = None
+
+    # 4h kline derivatives — same shape as the 1h block, used by PR-4 for
+    # higher-timeframe trend confirmation and EMA-slope checks. None when the
+    # 4h fetch failed or returned fewer than 51 bars.
+    price_change_pct_4h: float | None = None  # last fully-closed 4h bar vs the one before
+    ema50_4h: float | None = None             # EMA(50) on 4h closes
+    atr_4h: float | None = None               # ATR(14) on 4h bars, absolute price units
+
+    # Per-metric freshness timestamps. None means "upstream value never
+    # populated this snapshot". Used by `signals.evaluate` to drop rules
+    # whose underlying metric is older than the configured threshold —
+    # protects against stale REST responses leaking into entry decisions.
+    funding_rate_ts: datetime | None = None
+    open_interest_ts: datetime | None = None
+    long_short_ratio_ts: datetime | None = None
+
     def to_log_dict(self) -> dict:
         d = asdict(self)
         d["ts"] = self.ts.isoformat()
+        # Per-metric freshness ts fields are datetimes; flatten them to
+        # ISO strings (or None) so the row is directly JSON-serializable.
+        for key in ("funding_rate_ts", "open_interest_ts", "long_short_ratio_ts"):
+            val = d.get(key)
+            if isinstance(val, datetime):
+                d[key] = val.isoformat()
         return d
 
 
