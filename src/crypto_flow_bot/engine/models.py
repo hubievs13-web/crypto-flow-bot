@@ -86,6 +86,12 @@ class Snapshot:
     # signal rule used at decision time -- handy for post-hoc analysis.
     funding_rate_zscore: float | None = None
     funding_rate_percentile: float | None = None
+    regime: str | None = None
+    adx_1h: float | None = None
+    atr_pct_1h: float | None = None
+    predicted_funding_rate: float | None = None
+    predicted_funding_zscore: float | None = None
+    predicted_funding_percentile: float | None = None
 
     def to_log_dict(self) -> dict:
         d = asdict(self)

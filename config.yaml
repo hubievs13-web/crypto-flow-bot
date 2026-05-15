@@ -128,6 +128,23 @@ signals:
   # at the moment of the REST fetch; the gate compares it to `snap.ts`.
   freshness:
     enabled: true
+  predicted_funding:
+    enabled: false
+    funding_cap: 0.0075
+    mode: "auto"
+    zscore_lookback_days: 14
+    zscore_high_abs: 2.0
+    pct_lookback_days: 30
+    pct_high: 0.95
+    pct_low: 0.05
+    min_history_points: 20
+  regime:
+    enabled: true
+    adx_period: 14
+    trend_adx_threshold: 25
+    range_adx_threshold: 20
+    trend_atr_pct_threshold: 0.015
+    range_atr_pct_threshold: 0.01
     funding_max_age_seconds: 120        # premiumIndex; 2 × poll_interval
     open_interest_max_age_seconds: 120  # /fapi/v1/openInterest; same
     long_short_ratio_max_age_seconds: 600  # 5-min upstream buckets; allow 10min

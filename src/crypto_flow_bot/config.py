@@ -48,6 +48,28 @@ class FundingExtremeCfg(BaseModel):
     # Minimum stored observations before "auto" engages. 8h cycles, so
     # 20 ≈ 6.7 days of history -- enough to compute a meaningful mean/std.
     min_history_points: int = 20
+    enable_predicted: bool = False
+
+
+class PredictedFundingCfg(BaseModel):
+    enabled: bool = False
+    funding_cap: float = 0.0075
+    mode: str = "auto"
+    zscore_lookback_days: int = 14
+    zscore_high_abs: float = 2.0
+    pct_lookback_days: int = 30
+    pct_high: float = 0.95
+    pct_low: float = 0.05
+    min_history_points: int = 20
+
+
+class RegimeCfg(BaseModel):
+    enabled: bool = True
+    adx_period: int = 14
+    trend_adx_threshold: float = 25
+    range_adx_threshold: float = 20
+    trend_atr_pct_threshold: float = 0.015
+    range_atr_pct_threshold: float = 0.01
 
 
 class OiSurgeCfg(BaseModel):
@@ -162,6 +184,8 @@ class SignalsCfg(BaseModel):
     taker_confirmation: TakerConfirmationCfg = Field(default_factory=TakerConfirmationCfg)
     trend_filter: TrendFilterCfg = Field(default_factory=TrendFilterCfg)
     freshness: FreshnessCfg = Field(default_factory=FreshnessCfg)
+    predicted_funding: PredictedFundingCfg = Field(default_factory=PredictedFundingCfg)
+    regime: RegimeCfg = Field(default_factory=RegimeCfg)
 
     # Confluence window (minutes): a rule that fired on any snapshot within
     # this many minutes back counts toward the confluence set for the
@@ -199,6 +223,8 @@ class SignalsCfg(BaseModel):
             taker_confirmation=self.taker_confirmation,
             trend_filter=ov.trend_filter or self.trend_filter,
             freshness=self.freshness,
+            predicted_funding=self.predicted_funding,
+            regime=self.regime,
             confluence_window_minutes=self.confluence_window_minutes,
             funding_extreme_requires_confirmation=self.funding_extreme_requires_confirmation,
             per_symbol=self.per_symbol,

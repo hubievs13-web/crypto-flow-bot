@@ -16,6 +16,7 @@ from tenacity import AsyncRetrying, retry_if_exception_type, stop_after_attempt,
 
 from crypto_flow_bot.data.liquidations import LiquidationStream
 from crypto_flow_bot.engine.models import Snapshot
+from crypto_flow_bot.engine.regime import classify_regime, compute_adx
 
 log = logging.getLogger(__name__)
 
@@ -85,6 +86,22 @@ class BinanceClient:
         # ever changes silently.
         out.sort(key=lambda t: t[0])
         return out
+
+
+    async def premium_index(self, symbol: str) -> dict[str, float | datetime] | None:
+        data = await self._get("/fapi/v1/premiumIndex", {"symbol": symbol})
+        assert isinstance(data, dict)
+        try:
+            next_funding = datetime.fromtimestamp(int(data["nextFundingTime"]) / 1000.0, tz=UTC)
+            return {
+                "lastFundingRate": float(data["lastFundingRate"]),
+                "nextFundingTime": next_funding,
+                "interestRate": float(data["interestRate"]),
+                "markPrice": float(data["markPrice"]),
+                "indexPrice": float(data["indexPrice"]),
+            }
+        except (KeyError, TypeError, ValueError):
+            return None
 
     async def mark_price(self, symbol: str) -> float:
         data = await self._get("/fapi/v1/premiumIndex", {"symbol": symbol})
@@ -280,6 +297,14 @@ def _cvd_window_usd(klines: list[list], window_bars: int) -> float | None:
     return total
 
 
+def _compute_predicted_funding(mark_price: float, index_price: float, interest_rate: float, funding_cap: float) -> float | None:
+    if index_price == 0:
+        return None
+    premium_index = (mark_price - index_price) / index_price
+    predicted = premium_index + interest_rate
+    return max(-funding_cap, min(funding_cap, predicted))
+
+
 def _classify_oi_quality(
     price_change_pct_1h: float | None,
     open_interest_change_pct_window: float | None,
@@ -310,6 +335,10 @@ async def build_snapshot(
     oi_quality_epsilon_pct: float = 0.0005,
     *,
     enable_4h_klines: bool = True,
+    predicted_funding_cap: float = 0.0075,
+    regime_enabled: bool = True,
+    regime_adx_period: int = 14,
+    regime_cfg=None,
 ) -> Snapshot:
     """Pull a fresh snapshot for a symbol.
 
@@ -323,13 +352,14 @@ async def build_snapshot(
     filter is disabled in config.
     """
     fetch_ts = datetime.now(tz=UTC)
-    funding, oi_now, lsr, price, oi_hist, klines_1h = await asyncio.gather(
+    funding, oi_now, lsr, price, oi_hist, klines_1h, premium_idx = await asyncio.gather(
         client.funding_rate(symbol),
         client.open_interest_usd(symbol),
         client.top_long_short_position_ratio(symbol),
         client.latest_price(symbol),
         client.open_interest_history(symbol, period="5m", limit=max(2, oi_window_minutes // 5 + 1)),
         client.klines(symbol, "1h", limit=51),
+        client.premium_index(symbol),
     )
     # 4h is fetched separately so the typed unpacking above stays stable
     # regardless of whether the higher-TF block is enabled.
@@ -364,6 +394,26 @@ async def build_snapshot(
         )
 
     long_liq, short_liq = liq_stream.totals(symbol)
+
+    predicted_funding_rate = None
+    if premium_idx is not None:
+        predicted_funding_rate = _compute_predicted_funding(
+            float(premium_idx["markPrice"]),
+            float(premium_idx["indexPrice"]),
+            float(premium_idx["interestRate"]),
+            predicted_funding_cap,
+        )
+    else:
+        log.warning("premium_index unavailable for %s", symbol)
+    adx_1h = None
+    atr_pct_1h = None
+    regime = None
+    if regime_enabled and klines_1h and len(klines_1h) >= 30 and atr_1h is not None and price > 0:
+        atr_pct_1h = atr_1h / price
+        adx_1h = compute_adx(klines_1h, period=regime_adx_period)
+        if regime_cfg is not None:
+            regime = classify_regime(adx_1h, atr_pct_1h, regime_cfg)
+
     return Snapshot(
         symbol=symbol,
         ts=fetch_ts,
@@ -378,6 +428,10 @@ async def build_snapshot(
         ema50_1h=ema50_1h,
         ema50_slope_1h=ema50_slope_1h,
         atr_1h=atr_1h,
+        regime=regime,
+        adx_1h=adx_1h,
+        atr_pct_1h=atr_pct_1h,
+        predicted_funding_rate=predicted_funding_rate,
         taker_buy_quote_1h=taker_buy_1h,
         taker_sell_quote_1h=taker_sell_1h,
         taker_buy_dominance_1h=taker_buy_dominance_1h,
