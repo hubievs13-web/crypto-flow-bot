@@ -203,6 +203,7 @@ class SignalCandidate:
     # / blocked-event log / position lifecycle so rows in different jsonl
     # files can be joined.
     signal_id: str = field(default_factory=lambda: str(uuid.uuid4())[:8])
+    strong_override: bool | None = None
 
     @property
     def reason_label(self) -> str:
@@ -218,6 +219,8 @@ class SignalCandidate:
         normal entry condition, not a confluence bonus. STRONG should mark
         genuinely rare moments when two *fast* triggers agree.
         """
+        if self.strong_override is not None:
+            return self.strong_override
         non_funding = self.confluence_window_rules - CONFIRMATION_REQUIRED_RULES
         return len(non_funding) >= 2
 
@@ -336,16 +339,6 @@ def evaluate(
                 )
             )
 
-    # 1h EMA trend filter: drop counter-trend signals when the larger trend is clear.
-    # Liquidation cascades against the trend often *are* the highest-EV setups
-    # (long flush in uptrend, short squeeze in downtrend), so we exempt them.
-    tf = sig.trend_filter
-    if tf.enabled and tf.require_alignment and snap.ema50_1h is not None:
-        if snap.price > snap.ema50_1h:
-            short_rules = [r for r in short_rules if r.name == "liq_cascade"]
-        elif snap.price < snap.ema50_1h:
-            long_rules = [r for r in long_rules if r.name == "liq_cascade"]
-
     if now is None:
         now = snap.ts if snap.ts is not None else datetime.now(tz=UTC)
 
@@ -387,4 +380,44 @@ def evaluate(
                 confluence_window_rules=window_names,
             )
         )
-    return out
+    tf = sig.trend_filter
+    if not tf.enabled:
+        return out
+    kept: list[SignalCandidate] = []
+    for cand in out:
+        if any(r.name in tf.exempt_rules for r in cand.fired_rules):
+            kept.append(cand)
+            continue
+        drop = False
+        if tf.require_4h_alignment and cand.snapshot.ema50_4h is not None:
+            miss = (
+                cand.direction is Direction.LONG and cand.snapshot.price <= cand.snapshot.ema50_4h
+            ) or (
+                cand.direction is Direction.SHORT and cand.snapshot.price >= cand.snapshot.ema50_4h
+            )
+            if miss:
+                cand.strong_override = False
+                cand.fired_rules.append(FiredRule(name="trend_4h", description="trend_4h n/a"))
+                if tf.hard_block_on_4h:
+                    drop = True
+        if tf.require_1h_slope_alignment and cand.snapshot.ema50_slope_1h is not None:
+            s1 = cand.snapshot.ema50_slope_1h
+            if abs(s1) >= tf.slope_min_abs:
+                miss = (cand.direction is Direction.LONG and s1 <= 0) or (cand.direction is Direction.SHORT and s1 >= 0)
+                if miss:
+                    cand.strong_override = False
+                    cand.fired_rules.append(FiredRule(name="slope_1h", description=f"slope_1h n/a ({s1 * 100:+.2f}%/{tf.slope_window_bars}h)"))
+                    if tf.hard_block_on_slope:
+                        drop = True
+        if tf.require_4h_slope_alignment and cand.snapshot.ema50_slope_4h is not None:
+            s4 = cand.snapshot.ema50_slope_4h
+            if abs(s4) >= tf.slope_min_abs:
+                miss = (cand.direction is Direction.LONG and s4 <= 0) or (cand.direction is Direction.SHORT and s4 >= 0)
+                if miss:
+                    cand.strong_override = False
+                    cand.fired_rules.append(FiredRule(name="slope_4h", description=f"slope_4h n/a ({s4 * 100:+.2f}%/{tf.slope_window_bars * 4}h)"))
+                    if tf.hard_block_on_slope:
+                        drop = True
+        if not drop:
+            kept.append(cand)
+    return kept

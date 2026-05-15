@@ -171,6 +171,7 @@ class Bot:
                         self.liq_stream,
                         symbol,
                         oi_window_minutes=sig.oi_surge.window_minutes,
+                        slope_window_bars=sig.trend_filter.slope_window_bars,
                     )
                 except Exception as e:
                     log.warning("snapshot for %s failed: %s", symbol, e)
@@ -235,6 +236,7 @@ class Bot:
                         self.liq_stream,
                         symbol,
                         oi_window_minutes=sig.oi_surge.window_minutes,
+                        slope_window_bars=sig.trend_filter.slope_window_bars,
                     )
                 except Exception as e:
                     log.warning("liq fast-path snapshot for %s failed: %s", symbol, e)

@@ -103,6 +103,14 @@ signals:
     enabled: true
     ema_period: 50
     require_alignment: true
+    exempt_rules: ["liq_cascade"]
+    require_4h_alignment: true
+    require_1h_slope_alignment: true
+    require_4h_slope_alignment: false
+    slope_window_bars: 6
+    slope_min_abs: 0.0005
+    hard_block_on_4h: false
+    hard_block_on_slope: false
 
   # ─── Stale-data freshness gate (#49, #50 from the improvement doc) ───────
   # Drops a rule on a given snapshot when its underlying metric is older

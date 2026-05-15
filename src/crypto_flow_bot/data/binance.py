@@ -162,6 +162,18 @@ def compute_ema(values: list[float], period: int) -> float | None:
     return ema
 
 
+def _ema_series(values: list[float], period: int) -> list[float]:
+    if len(values) < period or period <= 0:
+        return []
+    alpha = 2.0 / (period + 1.0)
+    ema = sum(values[:period]) / period
+    out = [ema]
+    for v in values[period:]:
+        ema = alpha * v + (1.0 - alpha) * ema
+        out.append(ema)
+    return out
+
+
 def compute_atr(highs: list[float], lows: list[float], closes: list[float], period: int = 14) -> float | None:
     """Wilder-style ATR over the last `period` bars.
 
@@ -184,7 +196,9 @@ def compute_atr(highs: list[float], lows: list[float], closes: list[float], peri
 
 def _kline_derivatives(
     klines: list[list],
-) -> tuple[float | None, float | None, float | None]:
+    *,
+    slope_window_bars: int = 6,
+) -> tuple[float | None, float | None, float | None, float | None]:
     """Compute (price_change_pct, ema50, atr14) from a list of OHLCV bars.
 
     Only fully-closed bars are used (the last bar from Binance is always
@@ -194,6 +208,7 @@ def _kline_derivatives(
     price_change_pct: float | None = None
     ema50: float | None = None
     atr14: float | None = None
+    ema_slope: float | None = None
     if klines and len(klines) >= 2:
         closed = klines[:-1] if len(klines) > 1 else klines
         try:
@@ -203,10 +218,14 @@ def _kline_derivatives(
             if len(closes) >= 2 and closes[-2] > 0:
                 price_change_pct = (closes[-1] - closes[-2]) / closes[-2]
             ema50 = compute_ema(closes, period=50)
+            series = _ema_series(closes, period=50)
+            lookback_idx = slope_window_bars
+            if len(series) >= lookback_idx + 1 and series[-1 - lookback_idx] != 0:
+                ema_slope = (series[-1] - series[-1 - lookback_idx]) / series[-1 - lookback_idx]
             atr14 = compute_atr(highs, lows, closes, period=14)
         except (IndexError, ValueError):
             pass
-    return price_change_pct, ema50, atr14
+    return price_change_pct, ema50, atr14, ema_slope
 
 
 def _taker_quote_volumes(klines: list[list]) -> tuple[float | None, float | None]:
@@ -239,6 +258,7 @@ async def build_snapshot(
     liq_stream: LiquidationStream,
     symbol: str,
     oi_window_minutes: int,
+    slope_window_bars: int = 6,
     *,
     enable_4h_klines: bool = True,
 ) -> Snapshot:
@@ -277,14 +297,19 @@ async def build_snapshot(
         except (KeyError, ValueError):
             oi_change_pct = None
 
-    price_change_pct_1h, ema50_1h, atr_1h = _kline_derivatives(klines_1h)
+    price_change_pct_1h, ema50_1h, atr_1h, ema50_slope_1h = _kline_derivatives(
+        klines_1h, slope_window_bars=slope_window_bars
+    )
     taker_buy_1h, taker_sell_1h = _taker_quote_volumes(klines_1h)
 
     price_change_pct_4h: float | None = None
     ema50_4h: float | None = None
     atr_4h: float | None = None
+    ema50_slope_4h: float | None = None
     if klines_4h is not None:
-        price_change_pct_4h, ema50_4h, atr_4h = _kline_derivatives(klines_4h)
+        price_change_pct_4h, ema50_4h, atr_4h, ema50_slope_4h = _kline_derivatives(
+            klines_4h, slope_window_bars=slope_window_bars
+        )
 
     long_liq, short_liq = liq_stream.totals(symbol)
     return Snapshot(
@@ -299,11 +324,13 @@ async def build_snapshot(
         short_liquidations_usd_window=short_liq,
         price_change_pct_1h=price_change_pct_1h,
         ema50_1h=ema50_1h,
+        ema50_slope_1h=ema50_slope_1h,
         atr_1h=atr_1h,
         taker_buy_quote_1h=taker_buy_1h,
         taker_sell_quote_1h=taker_sell_1h,
         price_change_pct_4h=price_change_pct_4h,
         ema50_4h=ema50_4h,
+        ema50_slope_4h=ema50_slope_4h,
         atr_4h=atr_4h,
         funding_rate_ts=fetch_ts,
         open_interest_ts=fetch_ts,
