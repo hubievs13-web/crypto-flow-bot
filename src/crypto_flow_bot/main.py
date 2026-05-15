@@ -174,6 +174,10 @@ class Bot:
                         slope_window_bars=sig.trend_filter.slope_window_bars,
                         cvd_window_bars=sig.taker_confirmation.cvd_window_bars,
                         oi_quality_epsilon_pct=sig.oi_surge.quality_epsilon_pct,
+                        predicted_funding_cap=sig.predicted_funding.funding_cap,
+                        regime_enabled=sig.regime.enabled,
+                        regime_adx_period=sig.regime.adx_period,
+                        regime_cfg=sig.regime,
                     )
                 except Exception as e:
                     log.warning("snapshot for %s failed: %s", symbol, e)
@@ -241,6 +245,10 @@ class Bot:
                         slope_window_bars=sig.trend_filter.slope_window_bars,
                         cvd_window_bars=sig.taker_confirmation.cvd_window_bars,
                         oi_quality_epsilon_pct=sig.oi_surge.quality_epsilon_pct,
+                        predicted_funding_cap=sig.predicted_funding.funding_cap,
+                        regime_enabled=sig.regime.enabled,
+                        regime_adx_period=sig.regime.adx_period,
+                        regime_cfg=sig.regime,
                     )
                 except Exception as e:
                     log.warning("liq fast-path snapshot for %s failed: %s", symbol, e)
@@ -398,40 +406,43 @@ class Bot:
     # ---------- snapshot augmentation ----------
 
     def _augment_with_funding_stats(self, snap: Snapshot) -> None:
-        """Push the latest funding rate into the cache and stamp z-score/percentile.
+        """Stamp realized + predicted funding stats against realized history."""
+        if snap.funding_rate is not None and snap.funding_rate_ts is not None:
+            self.funding_history.update(snap.symbol, snap.funding_rate_ts, snap.funding_rate)
 
-        Mutates `snap.funding_rate_zscore` and `snap.funding_rate_percentile`
-        in place so they land in `snapshots.jsonl` next to the value that
-        produced them. The cache's `update()` is a no-op when the same 8h
-        funding value is seen twice (deduped by timestamp), so calling this
-        every 60s poll is safe -- only the first observation of a new 8h
-        cycle actually grows the history.
+        funding_cfg = self.cfg.signals.for_symbol(snap.symbol).funding_extreme
+        if snap.funding_rate is not None and funding_cfg.mode == "auto":
+            snap.funding_rate_zscore = self.funding_history.zscore(
+                symbol=snap.symbol,
+                value=snap.funding_rate,
+                now=snap.ts,
+                lookback_days=funding_cfg.zscore_lookback_days,
+                min_points=funding_cfg.min_history_points,
+            )
+            snap.funding_rate_percentile = self.funding_history.percentile_rank(
+                symbol=snap.symbol,
+                value=snap.funding_rate,
+                now=snap.ts,
+                lookback_days=funding_cfg.pct_lookback_days,
+                min_points=funding_cfg.min_history_points,
+            )
 
-        When the per-symbol cache hasn't yet collected
-        `cfg.funding_extreme.min_history_points` observations both stats
-        return None and the `funding_extreme` rule falls back to its
-        fixed thresholds.
-        """
-        if snap.funding_rate is None or snap.funding_rate_ts is None:
-            return
-        self.funding_history.update(snap.symbol, snap.funding_rate_ts, snap.funding_rate)
-        cfg = self.cfg.signals.for_symbol(snap.symbol).funding_extreme
-        if cfg.mode != "auto":
-            return
-        snap.funding_rate_zscore = self.funding_history.zscore(
-            symbol=snap.symbol,
-            value=snap.funding_rate,
-            now=snap.ts,
-            lookback_days=cfg.zscore_lookback_days,
-            min_points=cfg.min_history_points,
-        )
-        snap.funding_rate_percentile = self.funding_history.percentile_rank(
-            symbol=snap.symbol,
-            value=snap.funding_rate,
-            now=snap.ts,
-            lookback_days=cfg.pct_lookback_days,
-            min_points=cfg.min_history_points,
-        )
+        predicted_cfg = self.cfg.signals.for_symbol(snap.symbol).predicted_funding
+        if snap.predicted_funding_rate is not None and predicted_cfg.mode == "auto":
+            snap.predicted_funding_zscore = self.funding_history.zscore(
+                symbol=snap.symbol,
+                value=snap.predicted_funding_rate,
+                now=snap.ts,
+                lookback_days=predicted_cfg.zscore_lookback_days,
+                min_points=predicted_cfg.min_history_points,
+            )
+            snap.predicted_funding_percentile = self.funding_history.percentile_rank(
+                symbol=snap.symbol,
+                value=snap.predicted_funding_rate,
+                now=snap.ts,
+                lookback_days=predicted_cfg.pct_lookback_days,
+                min_points=predicted_cfg.min_history_points,
+            )
 
     # ---------- entry / exit handling ----------
 

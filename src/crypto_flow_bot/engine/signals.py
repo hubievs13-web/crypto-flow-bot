@@ -28,7 +28,7 @@ log = logging.getLogger(__name__)
 # Rule names that are NOT allowed to open a position alone (no other rule in
 # the confluence window). When `funding_extreme_requires_confirmation` is on
 # in config, a candidate built only from these rules is dropped.
-CONFIRMATION_REQUIRED_RULES: frozenset[str] = frozenset({"funding_extreme"})
+CONFIRMATION_REQUIRED_RULES: frozenset[str] = frozenset({"funding_extreme", "predicted_funding_extreme"})
 
 
 def _metric_is_stale(
@@ -50,8 +50,13 @@ def _metric_is_stale(
 
 
 def _evaluate_funding_extreme(
-    snap: Snapshot,
+    value: float | None,
+    zscore: float | None,
+    percentile: float | None,
     cfg: FundingExtremeCfg,
+    *,
+    rule_name: str = "funding_extreme",
+    desc_prefix: str = "funding",
 ) -> tuple[Direction, FiredRule] | None:
     """Decide whether `funding_extreme` fires on this snapshot.
 
@@ -69,13 +74,13 @@ def _evaluate_funding_extreme(
     Returns:
         (Direction, FiredRule) when the rule fires, None otherwise.
     """
-    if snap.funding_rate is None:
+    if value is None:
         return None
-    f = snap.funding_rate
+    f = value
 
     if cfg.mode == "auto":
-        z = snap.funding_rate_zscore
-        p = snap.funding_rate_percentile
+        z = zscore
+        p = percentile
         if z is not None or p is not None:
             # SHORT side: longs are overheated (high positive funding).
             short_hit: list[str] = []
@@ -87,7 +92,7 @@ def _evaluate_funding_extreme(
                 desc = (
                     f"funding {f * 100:+.3f}% extreme ({', '.join(short_hit)})"
                 )
-                return Direction.SHORT, FiredRule(name="funding_extreme", description=desc)
+                return Direction.SHORT, FiredRule(name=rule_name, description=desc.replace("funding", desc_prefix, 1))
 
             # LONG side: shorts are overheated (deeply negative funding).
             long_hit: list[str] = []
@@ -99,7 +104,7 @@ def _evaluate_funding_extreme(
                 desc = (
                     f"funding {f * 100:+.3f}% extreme ({', '.join(long_hit)})"
                 )
-                return Direction.LONG, FiredRule(name="funding_extreme", description=desc)
+                return Direction.LONG, FiredRule(name=rule_name, description=desc.replace("funding", desc_prefix, 1))
 
             # Auto path computed stats and they didn't cross -- do NOT
             # silently fall back to fixed thresholds. That would let the
@@ -111,12 +116,12 @@ def _evaluate_funding_extreme(
     # Fixed-threshold path (legacy behavior; also the cold-start fallback).
     if f >= cfg.long_overheated_above:
         return Direction.SHORT, FiredRule(
-            name="funding_extreme",
+            name=rule_name,
             description=f"funding {f * 100:+.3f}% (longs overheated)",
         )
     if f <= cfg.short_overheated_below:
         return Direction.LONG, FiredRule(
-            name="funding_extreme",
+            name=rule_name,
             description=f"funding {f * 100:+.3f}% (shorts overheated)",
         )
     return None
@@ -257,9 +262,39 @@ def evaluate(
         )
 
     if sig.funding_extreme.enabled and snap.funding_rate is not None and not stale["funding_extreme"]:
-        funding_fired = _evaluate_funding_extreme(snap, sig.funding_extreme)
+        funding_fired = _evaluate_funding_extreme(
+            snap.funding_rate, snap.funding_rate_zscore, snap.funding_rate_percentile, sig.funding_extreme
+        )
         if funding_fired is not None:
             direction, rule = funding_fired
+            if direction is Direction.SHORT:
+                short_rules.append(rule)
+            else:
+                long_rules.append(rule)
+
+    if sig.predicted_funding.enabled and snap.predicted_funding_rate is not None and not stale["funding_extreme"]:
+        predicted_cfg = FundingExtremeCfg(
+            enabled=sig.predicted_funding.enabled,
+            mode=sig.predicted_funding.mode,
+            zscore_lookback_days=sig.predicted_funding.zscore_lookback_days,
+            zscore_high_abs=sig.predicted_funding.zscore_high_abs,
+            pct_lookback_days=sig.predicted_funding.pct_lookback_days,
+            pct_high=sig.predicted_funding.pct_high,
+            pct_low=sig.predicted_funding.pct_low,
+            min_history_points=sig.predicted_funding.min_history_points,
+            long_overheated_above=sig.funding_extreme.long_overheated_above,
+            short_overheated_below=sig.funding_extreme.short_overheated_below,
+        )
+        predicted_fired = _evaluate_funding_extreme(
+            snap.predicted_funding_rate,
+            snap.predicted_funding_zscore,
+            snap.predicted_funding_percentile,
+            predicted_cfg,
+            rule_name="predicted_funding_extreme",
+            desc_prefix="predicted funding",
+        )
+        if predicted_fired is not None:
+            direction, rule = predicted_fired
             if direction is Direction.SHORT:
                 short_rules.append(rule)
             else:
