@@ -93,11 +93,19 @@ class LiquidationsCfg(BaseModel):
 
 
 class TrendFilterCfg(BaseModel):
-    """1h EMA-based trend filter. Blocks signals against the larger trend."""
+    """Trend/slope alignment gates for candidate strength."""
 
     enabled: bool = True
-    ema_period: int = 50         # EMA on 1h closes (we always pull 50 bars)
-    require_alignment: bool = True  # if true, drop SHORT signals above EMA / LONG signals below
+    ema_period: int = 50                 # EMA period for both 1h and 4h derivatives.
+    require_alignment: bool = True       # Legacy 1h EMA-side gate.
+    exempt_rules: list[str] = Field(default_factory=lambda: ["liq_cascade"])
+    require_4h_alignment: bool = True
+    require_1h_slope_alignment: bool = True
+    require_4h_slope_alignment: bool = False
+    slope_window_bars: int = 6
+    slope_min_abs: float = 0.0005
+    hard_block_on_4h: bool = False
+    hard_block_on_slope: bool = False
 
 
 class FreshnessCfg(BaseModel):
@@ -143,6 +151,7 @@ class SymbolOverridesCfg(BaseModel):
     oi_surge: OiSurgeCfg | None = None
     lsr_extreme: LsrExtremeCfg | None = None
     liq_cascade: LiqCascadeCfg | None = None
+    trend_filter: TrendFilterCfg | None = None
 
 
 class SignalsCfg(BaseModel):
@@ -188,7 +197,7 @@ class SignalsCfg(BaseModel):
             lsr_extreme=ov.lsr_extreme or self.lsr_extreme,
             liq_cascade=ov.liq_cascade or self.liq_cascade,
             taker_confirmation=self.taker_confirmation,
-            trend_filter=self.trend_filter,
+            trend_filter=ov.trend_filter or self.trend_filter,
             freshness=self.freshness,
             confluence_window_minutes=self.confluence_window_minutes,
             funding_extreme_requires_confirmation=self.funding_extreme_requires_confirmation,

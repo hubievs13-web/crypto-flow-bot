@@ -49,6 +49,7 @@ class Snapshot:
     # 1h kline derivatives — used for OI alignment, trend filtering, and ATR sizing.
     price_change_pct_1h: float | None = None  # last fully-closed 1h bar vs the one before
     ema50_1h: float | None = None             # EMA(50) on 1h closes
+    ema50_slope_1h: float | None = None       # (ema_now - ema_prev_window) / ema_prev_window
     atr_1h: float | None = None               # ATR(14) on 1h bars, in absolute price units
 
     # Taker buy/sell *quote* volume on the last fully-closed 1h bar, in USDT.
@@ -66,6 +67,7 @@ class Snapshot:
     # 4h fetch failed or returned fewer than 51 bars.
     price_change_pct_4h: float | None = None  # last fully-closed 4h bar vs the one before
     ema50_4h: float | None = None             # EMA(50) on 4h closes
+    ema50_slope_4h: float | None = None       # (ema_now - ema_prev_window) / ema_prev_window
     atr_4h: float | None = None               # ATR(14) on 4h bars, absolute price units
 
     # Per-metric freshness timestamps. None means "upstream value never

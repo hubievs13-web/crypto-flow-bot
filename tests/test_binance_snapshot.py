@@ -32,16 +32,17 @@ def test_kline_derivatives_drops_in_progress_last_bar():
         bars.append([0, "0", "0", "0", str(close), "0", 0, "0", 0, "0", "0", "0"])
     # Override the last (in-progress) close to a wild value.
     bars[-1][4] = "9999.0"
-    pc, ema, atr = _kline_derivatives(bars)
+    pc, ema, atr, slope = _kline_derivatives(bars)
     # Closed bars are 0..50 (51 bars). Last two closed closes are 150 and 149.
     # Expected price_change_pct = (150 - 149) / 149.
     assert pc is not None
     assert abs(pc - (1.0 / 149.0)) < 1e-9
+    assert slope is None
 
 
 def test_kline_derivatives_handles_empty_input():
-    pc, ema, atr = _kline_derivatives([])
-    assert pc is None and ema is None and atr is None
+    pc, ema, atr, slope = _kline_derivatives([])
+    assert pc is None and ema is None and atr is None and slope is None
 
 
 def test_kline_derivatives_handles_malformed_bar():
@@ -51,8 +52,8 @@ def test_kline_derivatives_handles_malformed_bar():
         [0, "x", "x", "x", "x", "0", 0, "0", 0, "0", "0", "0"],
         [0, "x", "x", "x", "x", "0", 0, "0", 0, "0", "0", "0"],
     ]
-    pc, ema, atr = _kline_derivatives(bars)
-    assert pc is None and ema is None and atr is None
+    pc, ema, atr, slope = _kline_derivatives(bars)
+    assert pc is None and ema is None and atr is None and slope is None
 
 
 # ─── _taker_quote_volumes ───────────────────────────────────────────────────

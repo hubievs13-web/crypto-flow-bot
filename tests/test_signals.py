@@ -175,16 +175,18 @@ def test_oi_decrease_does_not_fire_long_signal():
 # ─── Trend filter ───────────────────────────────────────────────────────────
 
 def test_trend_filter_blocks_short_when_above_ema():
-    # Price above EMA = uptrend. SHORT signal from funding/LSR should be suppressed.
-    snap = _snap(price=50000.0, ema50_1h=49000.0, funding_rate=0.0015)
+    # Price above 4h EMA: SHORT is misaligned and should be downgraded, not dropped.
+    snap = _snap(price=50000.0, ema50_4h=49000.0, funding_rate=0.0015, long_short_ratio=2.7)
     out = evaluate(snap, _cfg())
-    assert all(c.direction is not Direction.SHORT for c in out)
+    shorts = [c for c in out if c.direction is Direction.SHORT]
+    assert shorts and shorts[0].is_strong is False
 
 
 def test_trend_filter_blocks_long_when_below_ema():
-    snap = _snap(price=50000.0, ema50_1h=51500.0, funding_rate=-0.0015)
+    snap = _snap(price=50000.0, ema50_4h=51500.0, funding_rate=-0.0015, long_short_ratio=0.5)
     out = evaluate(snap, _cfg())
-    assert all(c.direction is not Direction.LONG for c in out)
+    longs = [c for c in out if c.direction is Direction.LONG]
+    assert longs and longs[0].is_strong is False
 
 
 def test_trend_filter_exempts_liq_cascade():
