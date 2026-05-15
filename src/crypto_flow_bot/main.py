@@ -171,6 +171,8 @@ class Bot:
                         self.liq_stream,
                         symbol,
                         oi_window_minutes=sig.oi_surge.window_minutes,
+                        cvd_window_bars=sig.taker_confirmation.cvd_window_bars,
+                        oi_quality_epsilon_pct=sig.oi_surge.quality_epsilon_pct,
                     )
                 except Exception as e:
                     log.warning("snapshot for %s failed: %s", symbol, e)
@@ -235,6 +237,8 @@ class Bot:
                         self.liq_stream,
                         symbol,
                         oi_window_minutes=sig.oi_surge.window_minutes,
+                        cvd_window_bars=sig.taker_confirmation.cvd_window_bars,
+                        oi_quality_epsilon_pct=sig.oi_surge.quality_epsilon_pct,
                     )
                 except Exception as e:
                     log.warning("liq fast-path snapshot for %s failed: %s", symbol, e)
