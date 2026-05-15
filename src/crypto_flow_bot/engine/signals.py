@@ -272,6 +272,34 @@ def evaluate(
             else:
                 long_rules.append(rule)
 
+    if sig.predicted_funding.enabled and snap.predicted_funding_rate is not None and not stale["funding_extreme"]:
+        predicted_cfg = FundingExtremeCfg(
+            enabled=sig.predicted_funding.enabled,
+            mode=sig.predicted_funding.mode,
+            zscore_lookback_days=sig.predicted_funding.zscore_lookback_days,
+            zscore_high_abs=sig.predicted_funding.zscore_high_abs,
+            pct_lookback_days=sig.predicted_funding.pct_lookback_days,
+            pct_high=sig.predicted_funding.pct_high,
+            pct_low=sig.predicted_funding.pct_low,
+            min_history_points=sig.predicted_funding.min_history_points,
+            long_overheated_above=sig.funding_extreme.long_overheated_above,
+            short_overheated_below=sig.funding_extreme.short_overheated_below,
+        )
+        predicted_fired = _evaluate_funding_extreme(
+            snap.predicted_funding_rate,
+            snap.predicted_funding_zscore,
+            snap.predicted_funding_percentile,
+            predicted_cfg,
+            rule_name="predicted_funding_extreme",
+            desc_prefix="predicted funding",
+        )
+        if predicted_fired is not None:
+            direction, rule = predicted_fired
+            if direction is Direction.SHORT:
+                short_rules.append(rule)
+            else:
+                long_rules.append(rule)
+
     if (
         sig.oi_surge.enabled
         and snap.open_interest_change_pct_window is not None

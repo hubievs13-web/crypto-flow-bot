@@ -19,7 +19,7 @@ from crypto_flow_bot.data.liquidations import LiquidationStream
 from crypto_flow_bot.engine.exits import evaluate_exit
 from crypto_flow_bot.engine.funding_history import FundingHistoryCache
 from crypto_flow_bot.engine.models import Direction, Snapshot
-from crypto_flow_bot.engine.signals import ConfluenceCache
+from crypto_flow_bot.engine.signals import ConfluenceCache, evaluate
 from crypto_flow_bot.engine.state import StateStore
 from crypto_flow_bot.log.store import JsonlLogger
 from crypto_flow_bot.notify.stats import (
@@ -31,6 +31,8 @@ from crypto_flow_bot.notify.stats import (
 )
 from crypto_flow_bot.notify.telegram import (
     TelegramNotifier,
+    format_entry_alert,
+    format_exit_alert,
     format_heartbeat,
     format_startup,
 )
@@ -405,37 +407,178 @@ class Bot:
 
     def _augment_with_funding_stats(self, snap: Snapshot) -> None:
         """Stamp realized + predicted funding stats against realized history."""
-        if snap.funding_rate is not None:
-            self.funding_history.update(snap.symbol, snap.ts, snap.funding_rate)
+        if snap.funding_rate is not None and snap.funding_rate_ts is not None:
+            self.funding_history.update(snap.symbol, snap.funding_rate_ts, snap.funding_rate)
 
-        cfg = self.cfg.signals.for_symbol(snap.symbol).funding_extreme
-        if snap.funding_rate is not None:
+        funding_cfg = self.cfg.signals.for_symbol(snap.symbol).funding_extreme
+        if snap.funding_rate is not None and funding_cfg.mode == "auto":
             snap.funding_rate_zscore = self.funding_history.zscore(
-                snap.symbol,
-                snap.funding_rate,
-                snap.ts,
-                lookback_days=cfg.zscore_lookback_days,
-                min_points=cfg.min_history_points,
+                symbol=snap.symbol,
+                value=snap.funding_rate,
+                now=snap.ts,
+                lookback_days=funding_cfg.zscore_lookback_days,
+                min_points=funding_cfg.min_history_points,
             )
             snap.funding_rate_percentile = self.funding_history.percentile_rank(
-                snap.symbol,
-                snap.funding_rate,
-                snap.ts,
-                lookback_days=cfg.pct_lookback_days,
-                min_points=cfg.min_history_points,
+                symbol=snap.symbol,
+                value=snap.funding_rate,
+                now=snap.ts,
+                lookback_days=funding_cfg.pct_lookback_days,
+                min_points=funding_cfg.min_history_points,
             )
-        pred_cfg = self.cfg.signals.for_symbol(snap.symbol).predicted_funding
-        if snap.predicted_funding_rate is not None:
+
+        predicted_cfg = self.cfg.signals.for_symbol(snap.symbol).predicted_funding
+        if snap.predicted_funding_rate is not None and predicted_cfg.mode == "auto":
             snap.predicted_funding_zscore = self.funding_history.zscore(
-                snap.symbol, snap.predicted_funding_rate, snap.ts,
-                lookback_days=pred_cfg.zscore_lookback_days,
-                min_points=pred_cfg.min_history_points,
+                symbol=snap.symbol,
+                value=snap.predicted_funding_rate,
+                now=snap.ts,
+                lookback_days=predicted_cfg.zscore_lookback_days,
+                min_points=predicted_cfg.min_history_points,
             )
             snap.predicted_funding_percentile = self.funding_history.percentile_rank(
-                snap.symbol, snap.predicted_funding_rate, snap.ts,
-                lookback_days=pred_cfg.pct_lookback_days,
-                min_points=pred_cfg.min_history_points,
+                symbol=snap.symbol,
+                value=snap.predicted_funding_rate,
+                now=snap.ts,
+                lookback_days=predicted_cfg.pct_lookback_days,
+                min_points=predicted_cfg.min_history_points,
             )
+
+    # ---------- entry / exit handling ----------
+
+    async def _handle_entry_signals(self, snap: Snapshot) -> None:
+        async with self._entry_lock:
+            await self._handle_entry_signals_locked(snap)
+
+    async def _handle_entry_signals_locked(self, snap: Snapshot) -> None:
+        candidates = evaluate(snap, self.cfg, cache=self.confluence_cache)
+        # Conflict policy: if rules fired in *both* directions on the same
+        # snapshot, skip the whole symbol this tick. The OR-logic means the
+        # market is sending mixed signals and the previous "open LONG first,
+        # then block SHORT as opposite-side" behavior arbitrarily picked one.
+        # Skipping is safer until we have a confluence score (Phase 2).
+        if len({c.direction for c in candidates}) >= 2:
+            log.info(
+                "skipping %s — conflicting signals: %s",
+                snap.symbol,
+                " | ".join(
+                    f"{c.direction.value}:{','.join(r.name for r in c.fired_rules)}"
+                    for c in candidates
+                ),
+            )
+            for c in candidates:
+                await self.logger.write_blocked(
+                    signal_id=c.signal_id,
+                    symbol=c.symbol,
+                    direction=c.direction,
+                    blocked_reason="conflicting_signals",
+                    fired_rules=[r.name for r in c.fired_rules],
+                    confluence_window_rules=list(c.confluence_window_rules),
+                    snapshot_ts=snap.ts,
+                )
+            return
+        for candidate in candidates:
+            blocked_reason = self._entry_blocked_reason(candidate)
+            if blocked_reason is not None:
+                self._maybe_log_skip(candidate, blocked_reason)
+                await self.logger.write_blocked(
+                    signal_id=candidate.signal_id,
+                    symbol=candidate.symbol,
+                    direction=candidate.direction,
+                    blocked_reason=blocked_reason,
+                    fired_rules=[r.name for r in candidate.fired_rules],
+                    confluence_window_rules=list(candidate.confluence_window_rules),
+                    snapshot_ts=snap.ts,
+                )
+                continue
+            position = self.state.open_from_signal(candidate, self.cfg)
+            self.state.mark_alerted(candidate.symbol, candidate.direction)
+            self.state.save()
+            alert = format_entry_alert(candidate, position, self.cfg)
+            await self.notifier.send(alert.text)
+            await self.logger.write_alert(alert)
+            await self.logger.write_position(position)
+
+    def _entry_blocked_reason(self, candidate) -> str | None:  # type: ignore[no-untyped-def]
+        """Run the risk gates in order and return the first blocking reason.
+
+        Reason tokens are stable, machine-readable strings (`cooldown`,
+        `position_open`, `opposite_open`, `post_exit_cooldown`,
+        `max_concurrent`, `max_per_direction_group`). They are written to
+        `blocked.jsonl` and also drive the in-memory log-dedup keys.
+        """
+        cd = self.state.cooldown_remaining_seconds(
+            candidate.symbol, candidate.direction, self.cfg.alert_cooldown_seconds
+        )
+        if cd > 0:
+            return "cooldown"
+        if self.state.open_for(candidate.symbol, candidate.direction) is not None:
+            return "position_open"
+        if self.state.open_for(candidate.symbol, candidate.direction.opposite) is not None:
+            return "opposite_open"
+        risk = self.cfg.risk
+        post_exit = self.state.post_exit_cooldown_remaining_seconds(
+            candidate.symbol, candidate.direction, risk.post_exit_cooldown_seconds
+        )
+        if post_exit > 0:
+            return "post_exit_cooldown"
+        open_now = self.state.open_positions()
+        if len(open_now) >= risk.max_concurrent_positions:
+            return "max_concurrent"
+        # Per-direction cap is enforced only *within* a correlation group.
+        # Symbols outside every group are unrestricted by this gate (e.g.
+        # SOLUSDT can sit alongside a BTCUSDT LONG when the only group is
+        # [BTCUSDT, ETHUSDT]).
+        if risk.max_per_direction is not None:
+            group = _correlation_group_for(candidate.symbol, risk.correlated_groups)
+            if group is not None:
+                same_dir_in_group = sum(
+                    1
+                    for p in open_now
+                    if p.direction == candidate.direction and p.symbol in group
+                )
+                if same_dir_in_group >= risk.max_per_direction:
+                    return "max_per_direction_group"
+        return None
+
+    def _maybe_log_skip(self, candidate, reason: str) -> None:  # type: ignore[no-untyped-def]
+        """Emit a deduplicated INFO log for a blocked entry candidate.
+
+        `cooldown` and `position_open` are noisy and stay at DEBUG — they
+        repeat every poll cycle while the state persists and carry no new
+        information. The other reasons go through StateStore.should_log_skip
+        which suppresses repeats of the same (symbol, direction, reason)
+        within `risk.skip_log_interval_seconds` (default 30 min).
+        """
+        if reason in ("cooldown", "position_open"):
+            log.debug(
+                "skip %s %s signal_id=%s reason=%s",
+                candidate.symbol, candidate.direction.value,
+                candidate.signal_id, reason,
+            )
+            return
+        interval = self.cfg.risk.skip_log_interval_seconds
+        if self.state.should_log_skip(
+            candidate.symbol, candidate.direction, reason, interval,
+        ):
+            log.info(
+                "skip %s %s signal_id=%s reason=%s rules=%s",
+                candidate.symbol, candidate.direction.value,
+                candidate.signal_id, reason,
+                ",".join(r.name for r in candidate.fired_rules),
+            )
+
+    async def _handle_exit_event(self, position, ev, price: float) -> None:  # type: ignore[no-untyped-def]
+        cfg = self.cfg
+        if ev.kind == "TRAILING_MOVE":
+            if ev.new_stop_loss_price is not None:
+                position.stop_loss_price = ev.new_stop_loss_price
+        elif ev.fraction_closed > 0:
+            self.state.close_position(position, price, reason=ev.kind, fraction=ev.fraction_closed)
+        alert = format_exit_alert(position, ev, price, cfg)
+        await self.notifier.send(alert.text)
+        await self.logger.write_alert(alert)
+        await self.logger.write_position(position)
 
     async def _sleep(self, seconds: float) -> None:
         try:

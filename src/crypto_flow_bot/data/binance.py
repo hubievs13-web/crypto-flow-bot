@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import UTC, datetime
+from typing import TypedDict
 
 import httpx
 from tenacity import AsyncRetrying, retry_if_exception_type, stop_after_attempt, wait_exponential
@@ -21,6 +22,14 @@ from crypto_flow_bot.engine.regime import classify_regime, compute_adx
 log = logging.getLogger(__name__)
 
 REST_BASE = "https://fapi.binance.com"
+
+
+class PremiumIndexData(TypedDict):
+    lastFundingRate: float
+    nextFundingTime: datetime
+    interestRate: float
+    markPrice: float
+    indexPrice: float
 
 
 class BinanceClient:
@@ -88,7 +97,7 @@ class BinanceClient:
         return out
 
 
-    async def premium_index(self, symbol: str) -> dict[str, float | datetime] | None:
+    async def premium_index(self, symbol: str) -> PremiumIndexData | None:
         data = await self._get("/fapi/v1/premiumIndex", {"symbol": symbol})
         assert isinstance(data, dict)
         try:
@@ -352,15 +361,15 @@ async def build_snapshot(
     filter is disabled in config.
     """
     fetch_ts = datetime.now(tz=UTC)
-    funding, oi_now, lsr, price, oi_hist, klines_1h, premium_idx = await asyncio.gather(
-        client.funding_rate(symbol),
-        client.open_interest_usd(symbol),
-        client.top_long_short_position_ratio(symbol),
-        client.latest_price(symbol),
-        client.open_interest_history(symbol, period="5m", limit=max(2, oi_window_minutes // 5 + 1)),
-        client.klines(symbol, "1h", limit=51),
-        client.premium_index(symbol),
+    funding = await client.funding_rate(symbol)
+    oi_now = await client.open_interest_usd(symbol)
+    lsr = await client.top_long_short_position_ratio(symbol)
+    price = await client.latest_price(symbol)
+    oi_hist = await client.open_interest_history(
+        symbol, period="5m", limit=max(2, oi_window_minutes // 5 + 1)
     )
+    klines_1h = await client.klines(symbol, "1h", limit=51)
+    premium_idx = await client.premium_index(symbol)
     # 4h is fetched separately so the typed unpacking above stays stable
     # regardless of whether the higher-TF block is enabled.
     klines_4h: list[list] | None = None
