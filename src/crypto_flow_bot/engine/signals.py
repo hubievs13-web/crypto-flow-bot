@@ -282,41 +282,44 @@ def evaluate(
         # Without alignment requirement we fall back to OI sign alone (noisy).
         if sig.oi_surge.require_price_aligned:
             quality = snap.oi_quality
+            price_pct = snap.price_change_pct_1h
             if sig.oi_surge.require_healthy and (
                 quality is None or quality.startswith("dangerous_")
             ):
                 log.info("oi_surge: skipping %s due to oi_quality=%s", snap.symbol, quality)
-            elif quality == "healthy_short":
+            elif quality == "healthy_short" and price_pct is not None:
                 short_rules.append(
                     FiredRule(
                         name="oi_surge",
-                        description=f"OI +{oi_pct * 100:.1f}% + price {snap.price_change_pct_1h * 100:+.2f}% / 1h (fresh longs)",
+                        description=f"OI +{oi_pct * 100:.1f}% + price {price_pct * 100:+.2f}% / 1h (fresh longs)",
                     )
                 )
-            elif quality == "healthy_long":
+            elif quality == "healthy_long" and price_pct is not None:
                 long_rules.append(
                     FiredRule(
                         name="oi_surge",
-                        description=f"OI +{oi_pct * 100:.1f}% + price {snap.price_change_pct_1h * 100:+.2f}% / 1h (fresh shorts)",
+                        description=f"OI +{oi_pct * 100:.1f}% + price {price_pct * 100:+.2f}% / 1h (fresh shorts)",
                     )
                 )
-            elif not sig.oi_surge.require_healthy:
-                price_pct = snap.price_change_pct_1h
-                if price_pct is not None and oi_pct > 0:
-                    if price_pct > 0:
-                        long_rules.append(
-                            FiredRule(
-                                name="oi_surge",
-                                description=f"OI +{oi_pct * 100:.1f}% + price {price_pct * 100:+.2f}% / 1h (fresh longs)",
-                            )
+            elif (
+                not sig.oi_surge.require_healthy
+                and price_pct is not None
+                and oi_pct > 0
+            ):
+                if price_pct > 0:
+                    long_rules.append(
+                        FiredRule(
+                            name="oi_surge",
+                            description=f"OI +{oi_pct * 100:.1f}% + price {price_pct * 100:+.2f}% / 1h (fresh longs)",
                         )
-                    elif price_pct < 0:
-                        short_rules.append(
-                            FiredRule(
-                                name="oi_surge",
-                                description=f"OI +{oi_pct * 100:.1f}% + price {price_pct * 100:+.2f}% / 1h (fresh shorts)",
-                            )
+                    )
+                elif price_pct < 0:
+                    short_rules.append(
+                        FiredRule(
+                            name="oi_surge",
+                            description=f"OI +{oi_pct * 100:.1f}% + price {price_pct * 100:+.2f}% / 1h (fresh shorts)",
                         )
+                    )
         else:
             if oi_pct > 0:
                 long_rules.append(
