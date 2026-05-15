@@ -91,6 +91,18 @@ signals:
     ema_period: 50
     require_alignment: true
 
+  # ─── Stale-data freshness gate (#49, #50 from the improvement doc) ───────
+  # Drops a rule on a given snapshot when its underlying metric is older
+  # than the configured threshold. Protects against Binance returning a
+  # cached/old value after retries (which would otherwise produce a signal
+  # based on stale state). Each `*_ts` field is set inside `build_snapshot`
+  # at the moment of the REST fetch; the gate compares it to `snap.ts`.
+  freshness:
+    enabled: true
+    funding_max_age_seconds: 120        # premiumIndex; 2 × poll_interval
+    open_interest_max_age_seconds: 120  # /fapi/v1/openInterest; same
+    long_short_ratio_max_age_seconds: 600  # 5-min upstream buckets; allow 10min
+
   # ─── Per-symbol threshold overrides ───────────────────────────────────────
   # Each watched symbol has its own "normal" funding/LSR/OI/liq distribution:
   # SOL moves wider than BTC, BTC has the deepest liq-book, etc. A single

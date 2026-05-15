@@ -92,19 +92,29 @@ class BinanceClient:
         assert isinstance(data, dict)
         return float(data["price"])
 
-    async def klines_1h(self, symbol: str, limit: int = 51) -> list[list]:
-        """Return the last `limit` 1h OHLCV bars for the symbol.
+    async def klines(self, symbol: str, interval: str, limit: int = 51) -> list[list]:
+        """Return the last `limit` OHLCV bars for the symbol at the given interval.
 
         Each entry is the raw Binance kline array:
-            [openTime, open, high, low, close, volume, closeTime, ...]
-        With limit=51 we get 50 fully closed bars + 1 in-progress bar.
+            [openTime, open, high, low, close, volume, closeTime,
+             quoteVolume, trades, takerBuyBaseVolume, takerBuyQuoteVolume, ignore]
+        Interval examples: '1h', '4h'. With limit=51 we get 50 fully closed bars
+        + 1 in-progress bar.
         """
         data = await self._get(
             "/fapi/v1/klines",
-            {"symbol": symbol, "interval": "1h", "limit": limit},
+            {"symbol": symbol, "interval": interval, "limit": limit},
         )
         assert isinstance(data, list)
         return data
+
+    async def klines_1h(self, symbol: str, limit: int = 51) -> list[list]:
+        """Backward-compatible wrapper around `klines` for 1h bars.
+
+        Older callers expect 1h klines specifically; new code should call
+        `klines(symbol, '1h', limit)` directly to make the timeframe explicit.
+        """
+        return await self.klines(symbol, "1h", limit)
 
 
 def compute_ema(values: list[float], period: int) -> float | None:
@@ -138,26 +148,91 @@ def compute_atr(highs: list[float], lows: list[float], closes: list[float], peri
     return sum(trs[-period:]) / period
 
 
+def _kline_derivatives(
+    klines: list[list],
+) -> tuple[float | None, float | None, float | None]:
+    """Compute (price_change_pct, ema50, atr14) from a list of OHLCV bars.
+
+    Only fully-closed bars are used (the last bar from Binance is always
+    in-progress and is dropped). Any field that can't be computed because
+    of malformed data returns None independently of the others.
+    """
+    price_change_pct: float | None = None
+    ema50: float | None = None
+    atr14: float | None = None
+    if klines and len(klines) >= 2:
+        closed = klines[:-1] if len(klines) > 1 else klines
+        try:
+            highs = [float(b[2]) for b in closed]
+            lows = [float(b[3]) for b in closed]
+            closes = [float(b[4]) for b in closed]
+            if len(closes) >= 2 and closes[-2] > 0:
+                price_change_pct = (closes[-1] - closes[-2]) / closes[-2]
+            ema50 = compute_ema(closes, period=50)
+            atr14 = compute_atr(highs, lows, closes, period=14)
+        except (IndexError, ValueError):
+            pass
+    return price_change_pct, ema50, atr14
+
+
+def _taker_quote_volumes(klines: list[list]) -> tuple[float | None, float | None]:
+    """Extract taker buy / taker sell quote volumes from the last fully-closed 1h kline.
+
+    Binance kline array indices used:
+        [7]  quoteAssetVolume      -- total quote volume on the bar
+        [10] takerBuyQuoteAssetVolume -- quote volume of *taker buy* fills
+
+    Taker-sell is the residual: total - taker-buy. Returns (None, None) when
+    the kline payload is malformed or we have fewer than 2 bars (no closed bar).
+    """
+    if not klines or len(klines) < 2:
+        return None, None
+    try:
+        bar = klines[-2]  # last fully-closed bar (index -1 is in-progress)
+        total = float(bar[7])
+        buy = float(bar[10])
+    except (IndexError, ValueError, TypeError):
+        return None, None
+    sell = total - buy
+    # Floating-point can drive `sell` slightly negative when buy == total.
+    if sell < 0:
+        sell = 0.0
+    return buy, sell
+
+
 async def build_snapshot(
     client: BinanceClient,
     liq_stream: LiquidationStream,
     symbol: str,
     oi_window_minutes: int,
+    *,
+    enable_4h_klines: bool = True,
 ) -> Snapshot:
     """Pull a fresh snapshot for a symbol.
 
     Combines REST data and the multi-exchange WS-driven liquidation totals.
     `liq_stream.totals(symbol)` already aggregates across every enabled
     exchange (see `crypto_flow_bot.data.liquidations.LiquidationStream`).
+
+    When `enable_4h_klines` is True (default), the snapshot also includes
+    4h EMA50 / ATR(14) / price-change derivatives, used by the higher-TF
+    trend filter in PR-4. Set False to skip the extra REST call when the
+    filter is disabled in config.
     """
-    funding, oi_now, lsr, price, oi_hist, klines = await asyncio.gather(
+    fetch_ts = datetime.now(tz=UTC)
+    funding, oi_now, lsr, price, oi_hist, klines_1h = await asyncio.gather(
         client.funding_rate(symbol),
         client.open_interest_usd(symbol),
         client.top_long_short_position_ratio(symbol),
         client.latest_price(symbol),
         client.open_interest_history(symbol, period="5m", limit=max(2, oi_window_minutes // 5 + 1)),
-        client.klines_1h(symbol, limit=51),
+        client.klines(symbol, "1h", limit=51),
     )
+    # 4h is fetched separately so the typed unpacking above stays stable
+    # regardless of whether the higher-TF block is enabled.
+    klines_4h: list[list] | None = None
+    if enable_4h_klines:
+        klines_4h = await client.klines(symbol, "4h", limit=51)
 
     oi_change_pct: float | None = None
     if oi_hist:
@@ -168,28 +243,19 @@ async def build_snapshot(
         except (KeyError, ValueError):
             oi_change_pct = None
 
-    # 1h kline derivatives: price-change for OI alignment, EMA for trend, ATR for sizing.
-    price_change_pct_1h: float | None = None
-    ema50_1h: float | None = None
-    atr_1h: float | None = None
-    if klines and len(klines) >= 2:
-        # Use only fully-closed bars; the last bar from Binance is in-progress.
-        closed = klines[:-1] if len(klines) > 1 else klines
-        try:
-            highs = [float(b[2]) for b in closed]
-            lows = [float(b[3]) for b in closed]
-            closes = [float(b[4]) for b in closed]
-            if len(closes) >= 2 and closes[-2] > 0:
-                price_change_pct_1h = (closes[-1] - closes[-2]) / closes[-2]
-            ema50_1h = compute_ema(closes, period=50)
-            atr_1h = compute_atr(highs, lows, closes, period=14)
-        except (IndexError, ValueError):
-            pass
+    price_change_pct_1h, ema50_1h, atr_1h = _kline_derivatives(klines_1h)
+    taker_buy_1h, taker_sell_1h = _taker_quote_volumes(klines_1h)
+
+    price_change_pct_4h: float | None = None
+    ema50_4h: float | None = None
+    atr_4h: float | None = None
+    if klines_4h is not None:
+        price_change_pct_4h, ema50_4h, atr_4h = _kline_derivatives(klines_4h)
 
     long_liq, short_liq = liq_stream.totals(symbol)
     return Snapshot(
         symbol=symbol,
-        ts=datetime.now(tz=UTC),
+        ts=fetch_ts,
         price=price,
         funding_rate=funding,
         open_interest_usd=oi_now,
@@ -200,4 +266,12 @@ async def build_snapshot(
         price_change_pct_1h=price_change_pct_1h,
         ema50_1h=ema50_1h,
         atr_1h=atr_1h,
+        taker_buy_quote_1h=taker_buy_1h,
+        taker_sell_quote_1h=taker_sell_1h,
+        price_change_pct_4h=price_change_pct_4h,
+        ema50_4h=ema50_4h,
+        atr_4h=atr_4h,
+        funding_rate_ts=fetch_ts,
+        open_interest_ts=fetch_ts,
+        long_short_ratio_ts=fetch_ts,
     )

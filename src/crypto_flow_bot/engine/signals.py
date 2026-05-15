@@ -14,18 +14,65 @@ per-(symbol, direction) history of rule fires for cross-snapshot confluence.
 
 from __future__ import annotations
 
+import logging
 import uuid
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
-from crypto_flow_bot.config import Config
+from crypto_flow_bot.config import Config, FreshnessCfg
 from crypto_flow_bot.engine.models import Direction, Snapshot
+
+log = logging.getLogger(__name__)
 
 # Rule names that are NOT allowed to open a position alone (no other rule in
 # the confluence window). When `funding_extreme_requires_confirmation` is on
 # in config, a candidate built only from these rules is dropped.
 CONFIRMATION_REQUIRED_RULES: frozenset[str] = frozenset({"funding_extreme"})
+
+
+def _metric_is_stale(
+    *,
+    snap_ts: datetime,
+    metric_ts: datetime | None,
+    max_age_seconds: int,
+) -> bool:
+    """Return True when the metric is older than `max_age_seconds` at snap_ts.
+
+    `max_age_seconds <= 0` disables the gate for that metric (always fresh).
+    A missing `metric_ts` is treated as "fresh" -- the rule's own None-check
+    for the metric value already handles the not-yet-populated case.
+    """
+    if max_age_seconds <= 0 or metric_ts is None:
+        return False
+    age = (snap_ts - metric_ts).total_seconds()
+    return age > max_age_seconds
+
+
+def _check_freshness(
+    snap: Snapshot,
+    fresh: FreshnessCfg,
+) -> dict[str, bool]:
+    """Compute per-rule freshness verdicts. True = stale (skip the rule)."""
+    if not fresh.enabled:
+        return {"funding_extreme": False, "oi_surge": False, "lsr_extreme": False}
+    return {
+        "funding_extreme": _metric_is_stale(
+            snap_ts=snap.ts,
+            metric_ts=snap.funding_rate_ts,
+            max_age_seconds=fresh.funding_max_age_seconds,
+        ),
+        "oi_surge": _metric_is_stale(
+            snap_ts=snap.ts,
+            metric_ts=snap.open_interest_ts,
+            max_age_seconds=fresh.open_interest_max_age_seconds,
+        ),
+        "lsr_extreme": _metric_is_stale(
+            snap_ts=snap.ts,
+            metric_ts=snap.long_short_ratio_ts,
+            max_age_seconds=fresh.long_short_ratio_max_age_seconds,
+        ),
+    }
 
 
 @dataclass
@@ -122,7 +169,18 @@ def evaluate(
     # (a single global value either spams alts or starves majors).
     sig = cfg.signals.for_symbol(snap.symbol)
 
-    if sig.funding_extreme.enabled and snap.funding_rate is not None:
+    # Per-metric freshness verdicts. A stale metric short-circuits the
+    # matching rule below regardless of the underlying value.
+    stale = _check_freshness(snap, sig.freshness)
+    if any(stale.values()):
+        stale_names = sorted(k for k, v in stale.items() if v)
+        log.info(
+            "freshness gate: skipping stale rules for %s: %s",
+            snap.symbol,
+            ",".join(stale_names),
+        )
+
+    if sig.funding_extreme.enabled and snap.funding_rate is not None and not stale["funding_extreme"]:
         f = snap.funding_rate
         if f >= sig.funding_extreme.long_overheated_above:
             short_rules.append(
@@ -137,6 +195,7 @@ def evaluate(
         sig.oi_surge.enabled
         and snap.open_interest_change_pct_window is not None
         and abs(snap.open_interest_change_pct_window) >= sig.oi_surge.pct_change_threshold
+        and not stale["oi_surge"]
     ):
         oi_pct = snap.open_interest_change_pct_window
         # OI direction alone is ambiguous (longs and shorts both grow OI).
@@ -174,7 +233,7 @@ def evaluate(
                     FiredRule(name="oi_surge", description=f"OI {oi_pct * 100:.1f}% / window (fresh shorts)")
                 )
 
-    if sig.lsr_extreme.enabled and snap.long_short_ratio is not None:
+    if sig.lsr_extreme.enabled and snap.long_short_ratio is not None and not stale["lsr_extreme"]:
         lsr = snap.long_short_ratio
         if lsr >= sig.lsr_extreme.long_heavy_above:
             short_rules.append(

@@ -350,3 +350,87 @@ def test_unknown_symbol_uses_global_defaults():
     cfg = _cfg_with_per_symbol()
     eff = cfg.signals.for_symbol("DOGEUSDT")
     assert eff.funding_extreme.long_overheated_above == cfg.signals.funding_extreme.long_overheated_above
+
+
+# ─── Freshness gate ────────────────────────────────────────────────────────
+
+def test_freshness_gate_drops_stale_funding_rule():
+    """A funding metric older than freshness.funding_max_age_seconds is
+    ignored even if its value would otherwise cross the threshold."""
+    now = datetime.now(tz=UTC)
+    snap = _snap(
+        ts=now,
+        funding_rate=0.0010,
+        funding_rate_ts=now - timedelta(seconds=300),  # 5 min old > default 120s
+        long_short_ratio=2.7,
+        long_short_ratio_ts=now,
+    )
+    out = evaluate(snap, _cfg())
+    rule_names = {r.name for c in out for r in c.fired_rules}
+    assert "funding_extreme" not in rule_names
+    # LSR remains fresh and is allowed to fire.
+    assert "lsr_extreme" in rule_names
+
+
+def test_freshness_gate_drops_stale_lsr_rule():
+    now = datetime.now(tz=UTC)
+    snap = _snap(
+        ts=now,
+        long_short_ratio=2.7,
+        long_short_ratio_ts=now - timedelta(seconds=900),  # 15 min > default 600s
+    )
+    out = evaluate(snap, _cfg())
+    rule_names = {r.name for c in out for r in c.fired_rules}
+    assert "lsr_extreme" not in rule_names
+
+
+def test_freshness_gate_disabled_lets_stale_metric_fire():
+    """With freshness.enabled=False the timestamp is ignored."""
+    from crypto_flow_bot.config import FreshnessCfg
+    now = datetime.now(tz=UTC)
+    cfg = Config(
+        symbols=["BTCUSDT"],
+        signals=SignalsCfg(
+            funding_extreme_requires_confirmation=False,
+            freshness=FreshnessCfg(enabled=False),
+        ),
+    )
+    snap = _snap(
+        ts=now,
+        funding_rate=0.0010,
+        funding_rate_ts=now - timedelta(hours=2),  # very stale
+    )
+    out = evaluate(snap, cfg)
+    rule_names = {r.name for c in out for r in c.fired_rules}
+    assert "funding_extreme" in rule_names
+
+
+def test_freshness_gate_treats_missing_ts_as_fresh():
+    """An older Snapshot loaded from state has no per-metric ts; rules
+    must still fire — the gate only kicks in when we have a ts and it's old."""
+    snap = _snap(funding_rate=0.0010, long_short_ratio=2.7)
+    # funding_rate_ts / long_short_ratio_ts default to None.
+    out = evaluate(snap, _cfg())
+    rule_names = {r.name for c in out for r in c.fired_rules}
+    assert {"funding_extreme", "lsr_extreme"}.issubset(rule_names)
+
+
+def test_freshness_per_metric_zero_disables_individual_gate():
+    """`*_max_age_seconds: 0` disables the gate for that metric only."""
+    from crypto_flow_bot.config import FreshnessCfg
+    now = datetime.now(tz=UTC)
+    cfg = Config(
+        symbols=["BTCUSDT"],
+        signals=SignalsCfg(
+            funding_extreme_requires_confirmation=False,
+            freshness=FreshnessCfg(funding_max_age_seconds=0),  # never stale
+        ),
+    )
+    snap = _snap(
+        ts=now,
+        funding_rate=0.0010,
+        funding_rate_ts=now - timedelta(hours=2),
+    )
+    out = evaluate(snap, cfg)
+    rule_names = {r.name for c in out for r in c.fired_rules}
+    assert "funding_extreme" in rule_names

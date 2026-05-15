@@ -56,6 +56,36 @@ class TrendFilterCfg(BaseModel):
     require_alignment: bool = True  # if true, drop SHORT signals above EMA / LONG signals below
 
 
+class FreshnessCfg(BaseModel):
+    """Stale-data protection. Drops rules whose underlying upstream metric
+    is older than the configured threshold at evaluation time.
+
+    Each Binance metric has its own natural refresh cadence:
+        - funding rate (premiumIndex)     -- streamed, but the *value* changes
+          slowly (every 8h funding cycle, with intra-cycle drift)
+        - open interest (/fapi/v1/openInterest) -- updated continuously
+        - top long/short ratio            -- 5-minute buckets
+
+    The thresholds below are wall-clock ages relative to the snapshot's own
+    `ts`. When a REST call fails and the snapshot carries the previous-cycle
+    metric, the corresponding `*_ts` is older than the current poll and the
+    matching rule is skipped. This is intentionally orthogonal to the
+    `tenacity` retry layer in `BinanceClient`: retries reduce the probability
+    of stale-leak, freshness gates handle the case where retries exhaust.
+
+    Set `enabled: false` to disable the gate entirely (legacy behavior).
+    Set an individual `*_max_age_seconds: 0` to allow any age for that metric.
+    """
+
+    enabled: bool = True
+    # Funding and OI are real-time REST endpoints -- 2x poll interval is generous.
+    funding_max_age_seconds: int = 120
+    open_interest_max_age_seconds: int = 120
+    # LSR buckets close every 5 minutes upstream; allow up to 10min before
+    # we treat the value as stale.
+    long_short_ratio_max_age_seconds: int = 600
+
+
 class SymbolOverridesCfg(BaseModel):
     """Per-symbol threshold overrides. Any field set here replaces the global
     default *only for that symbol*. Fields left as None inherit the global.
@@ -77,6 +107,7 @@ class SignalsCfg(BaseModel):
     lsr_extreme: LsrExtremeCfg = Field(default_factory=LsrExtremeCfg)
     liq_cascade: LiqCascadeCfg = Field(default_factory=LiqCascadeCfg)
     trend_filter: TrendFilterCfg = Field(default_factory=TrendFilterCfg)
+    freshness: FreshnessCfg = Field(default_factory=FreshnessCfg)
 
     # Confluence window (minutes): a rule that fired on any snapshot within
     # this many minutes back counts toward the confluence set for the
@@ -112,6 +143,7 @@ class SignalsCfg(BaseModel):
             lsr_extreme=ov.lsr_extreme or self.lsr_extreme,
             liq_cascade=ov.liq_cascade or self.liq_cascade,
             trend_filter=self.trend_filter,
+            freshness=self.freshness,
             confluence_window_minutes=self.confluence_window_minutes,
             funding_extreme_requires_confirmation=self.funding_extreme_requires_confirmation,
             per_symbol=self.per_symbol,
