@@ -77,6 +77,17 @@ class Snapshot:
     funding_rate_ts: datetime | None = None
     open_interest_ts: datetime | None = None
     long_short_ratio_ts: datetime | None = None
+    klines_1h_ts: datetime | None = None
+    klines_4h_ts: datetime | None = None
+    predicted_funding_ts: datetime | None = None
+
+    # Settled funding-rate cycle timestamp (nextFundingTime - 8h). Distinct
+    # from `funding_rate_ts` which is the poll/fetch time. The cycle ts is
+    # used by FundingHistoryCache to dedupe: Binance funding settles every
+    # 8h but the bot polls every 60s, so 480 polls share the same cycle ts.
+    # Without this dedup the cache would log the same observation hundreds
+    # of times per cycle and bias the percentile/z-score downstream.
+    funding_rate_cycle_ts: datetime | None = None
 
     # Funding-rate statistics evaluated against the per-symbol rolling
     # history (FundingHistoryCache). Populated by the bot's poll loop before
@@ -98,7 +109,15 @@ class Snapshot:
         d["ts"] = self.ts.isoformat()
         # Per-metric freshness ts fields are datetimes; flatten them to
         # ISO strings (or None) so the row is directly JSON-serializable.
-        for key in ("funding_rate_ts", "open_interest_ts", "long_short_ratio_ts"):
+        for key in (
+            "funding_rate_ts",
+            "open_interest_ts",
+            "long_short_ratio_ts",
+            "klines_1h_ts",
+            "klines_4h_ts",
+            "predicted_funding_ts",
+            "funding_rate_cycle_ts",
+        ):
             val = d.get(key)
             if isinstance(val, datetime):
                 d[key] = val.isoformat()

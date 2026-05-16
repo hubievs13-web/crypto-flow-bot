@@ -114,11 +114,14 @@ signals:
     exempt_rules: ["liq_cascade"]
     require_4h_alignment: true
     require_1h_slope_alignment: true
-    require_4h_slope_alignment: false
+    require_4h_slope_alignment: true
     slope_window_bars: 6
     slope_min_abs: 0.0005
-    hard_block_on_4h: false
-    hard_block_on_slope: false
+    # Hard-block enabled (PR fix P0-6). Counter-trend signals must be dropped,
+    # not just downgraded -- a misaligned strong rule pre-fix could still
+    # produce an alert with is_strong=False.
+    hard_block_on_4h: true
+    hard_block_on_slope: true
 
   # ─── Stale-data freshness gate (#49, #50 from the improvement doc) ───────
   # Drops a rule on a given snapshot when its underlying metric is older
@@ -128,9 +131,21 @@ signals:
   # at the moment of the REST fetch; the gate compares it to `snap.ts`.
   freshness:
     enabled: true
+    # Hard-block on stale critical metrics (PR fix P0-7). Pre-fix the gate
+    # only skipped the matching rule; now any stale critical metric drops
+    # the whole candidate set. Missing timestamps count as stale.
+    hard_block_on_stale: true
+    missing_ts_is_stale: true
+    funding_max_age_seconds: 120          # premiumIndex; 2 × poll_interval
+    open_interest_max_age_seconds: 120    # /fapi/v1/openInterest; same
+    long_short_ratio_max_age_seconds: 600 # 5-min upstream buckets; allow 10min
+    klines_max_age_seconds: 120           # 1h klines REST fetch
+    predicted_funding_max_age_seconds: 120
+
   predicted_funding:
-    enabled: false
+    enabled: true
     funding_cap: 0.0075
+    interest_clamp_abs: 0.0005
     mode: "auto"
     zscore_lookback_days: 14
     zscore_high_abs: 2.0
@@ -138,6 +153,9 @@ signals:
     pct_high: 0.95
     pct_low: 0.05
     min_history_points: 20
+    long_overheated_above: 0.0008
+    short_overheated_below: -0.0005
+
   regime:
     enabled: true
     adx_period: 14
@@ -145,9 +163,6 @@ signals:
     range_adx_threshold: 20
     trend_atr_pct_threshold: 0.015
     range_atr_pct_threshold: 0.01
-    funding_max_age_seconds: 120        # premiumIndex; 2 × poll_interval
-    open_interest_max_age_seconds: 120  # /fapi/v1/openInterest; same
-    long_short_ratio_max_age_seconds: 600  # 5-min upstream buckets; allow 10min
 
   # ─── Per-symbol threshold overrides ───────────────────────────────────────
   # Each watched symbol has its own "normal" funding/LSR/OI/liq distribution:

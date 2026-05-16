@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TypedDict
 
 import httpx
@@ -306,11 +306,23 @@ def _cvd_window_usd(klines: list[list], window_bars: int) -> float | None:
     return total
 
 
-def _compute_predicted_funding(mark_price: float, index_price: float, interest_rate: float, funding_cap: float) -> float | None:
-    if index_price == 0:
+def _compute_predicted_funding(
+    mark_price: float,
+    index_price: float,
+    interest_rate: float,
+    funding_cap: float,
+    interest_clamp_abs: float = 0.0005,
+) -> float | None:
+    """Binance funding formula: premium_index + clamp(interest_rate - premium_index, ±0.05%).
+
+    Then a safety clamp to ±funding_cap (Binance hard cap, default 0.75% / 8h).
+    Returns None when index_price is non-positive.
+    """
+    if index_price <= 0:
         return None
     premium_index = (mark_price - index_price) / index_price
-    predicted = premium_index + interest_rate
+    adjustment = max(-interest_clamp_abs, min(interest_clamp_abs, interest_rate - premium_index))
+    predicted = premium_index + adjustment
     return max(-funding_cap, min(funding_cap, predicted))
 
 
@@ -345,9 +357,12 @@ async def build_snapshot(
     *,
     enable_4h_klines: bool = True,
     predicted_funding_cap: float = 0.0075,
+    predicted_funding_interest_clamp_abs: float = 0.0005,
     regime_enabled: bool = True,
     regime_adx_period: int = 14,
     regime_cfg=None,
+    ema_period: int = 50,
+    funding_cycle_hours: int = 8,
 ) -> Snapshot:
     """Pull a fresh snapshot for a symbol.
 
@@ -368,13 +383,20 @@ async def build_snapshot(
     oi_hist = await client.open_interest_history(
         symbol, period="5m", limit=max(2, oi_window_minutes // 5 + 1)
     )
-    klines_1h = await client.klines(symbol, "1h", limit=51)
+    # PR fix P0-5: limit must be >= ema_period + slope_window_bars + 1 in-progress
+    # bar so that _kline_derivatives can compute the EMA slope. Default 51 only
+    # produced 50 closed bars -> EMA50 series of length 1 -> slope was always None.
+    klines_limit = ema_period + slope_window_bars + 5
+    klines_1h = await client.klines(symbol, "1h", limit=klines_limit)
+    klines_1h_ts = datetime.now(tz=UTC)
     premium_idx = await client.premium_index(symbol)
     # 4h is fetched separately so the typed unpacking above stays stable
     # regardless of whether the higher-TF block is enabled.
     klines_4h: list[list] | None = None
+    klines_4h_ts: datetime | None = None
     if enable_4h_klines:
-        klines_4h = await client.klines(symbol, "4h", limit=51)
+        klines_4h = await client.klines(symbol, "4h", limit=klines_limit)
+        klines_4h_ts = datetime.now(tz=UTC)
 
     oi_change_pct: float | None = None
     if oi_hist:
@@ -405,13 +427,25 @@ async def build_snapshot(
     long_liq, short_liq = liq_stream.totals(symbol)
 
     predicted_funding_rate = None
+    predicted_funding_ts: datetime | None = None
+    funding_rate_cycle_ts: datetime | None = None
     if premium_idx is not None:
         predicted_funding_rate = _compute_predicted_funding(
             float(premium_idx["markPrice"]),
             float(premium_idx["indexPrice"]),
             float(premium_idx["interestRate"]),
             predicted_funding_cap,
+            predicted_funding_interest_clamp_abs,
         )
+        if predicted_funding_rate is not None:
+            predicted_funding_ts = datetime.now(tz=UTC)
+        # PR fix P0-1: the realized funding rate published right now belongs to
+        # the cycle that ENDED `funding_cycle_hours` before nextFundingTime.
+        # Using this as the cache key dedupes the rolling history correctly
+        # even when the bot polls every 60s through an 8h cycle.
+        next_funding = premium_idx["nextFundingTime"]
+        if isinstance(next_funding, datetime):
+            funding_rate_cycle_ts = next_funding - timedelta(hours=funding_cycle_hours)
     else:
         log.warning("premium_index unavailable for %s", symbol)
     adx_1h = None
@@ -451,6 +485,10 @@ async def build_snapshot(
         ema50_slope_4h=ema50_slope_4h,
         atr_4h=atr_4h,
         funding_rate_ts=fetch_ts,
+        funding_rate_cycle_ts=funding_rate_cycle_ts,
         open_interest_ts=fetch_ts,
         long_short_ratio_ts=fetch_ts,
+        klines_1h_ts=klines_1h_ts,
+        klines_4h_ts=klines_4h_ts,
+        predicted_funding_ts=predicted_funding_ts,
     )

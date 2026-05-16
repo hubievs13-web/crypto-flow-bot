@@ -36,15 +36,20 @@ def _metric_is_stale(
     snap_ts: datetime,
     metric_ts: datetime | None,
     max_age_seconds: int,
+    missing_is_stale: bool = False,
 ) -> bool:
     """Return True when the metric is older than `max_age_seconds` at snap_ts.
 
     `max_age_seconds <= 0` disables the gate for that metric (always fresh).
-    A missing `metric_ts` is treated as "fresh" -- the rule's own None-check
-    for the metric value already handles the not-yet-populated case.
+    When `missing_is_stale` is True (PR fix P0-7), a missing `metric_ts` is
+    treated as stale -- a never-populated metric should NOT pass a safety gate.
+    Legacy callers (per-rule downgrade) keep missing_is_stale=False so the
+    individual rule's own value-None-check handles the not-yet-populated case.
     """
-    if max_age_seconds <= 0 or metric_ts is None:
+    if max_age_seconds <= 0:
         return False
+    if metric_ts is None:
+        return missing_is_stale
     age = (snap_ts - metric_ts).total_seconds()
     return age > max_age_seconds
 
@@ -153,6 +158,54 @@ def _check_freshness(
     }
 
 
+def _check_hard_block_freshness(
+    snap: Snapshot,
+    fresh: FreshnessCfg,
+) -> list[str]:
+    """Return list of stale critical metrics. Empty list = all fresh.
+
+    PR fix P0-7: when the freshness gate is in hard-block mode, ANY stale
+    critical metric should drop the entire candidate set, not just the matching
+    rule. Critical = inputs without which we cannot make any signal decision:
+    funding, OI, LSR, 1h klines (everything else is auxiliary).
+    Missing ts on a critical metric is also treated as stale per
+    `fresh.missing_ts_is_stale` (default True).
+    """
+    if not fresh.enabled or not fresh.hard_block_on_stale:
+        return []
+    stale: list[str] = []
+    missing = fresh.missing_ts_is_stale
+    if _metric_is_stale(
+        snap_ts=snap.ts,
+        metric_ts=snap.funding_rate_ts,
+        max_age_seconds=fresh.funding_max_age_seconds,
+        missing_is_stale=missing,
+    ):
+        stale.append("funding_rate")
+    if _metric_is_stale(
+        snap_ts=snap.ts,
+        metric_ts=snap.open_interest_ts,
+        max_age_seconds=fresh.open_interest_max_age_seconds,
+        missing_is_stale=missing,
+    ):
+        stale.append("open_interest")
+    if _metric_is_stale(
+        snap_ts=snap.ts,
+        metric_ts=snap.long_short_ratio_ts,
+        max_age_seconds=fresh.long_short_ratio_max_age_seconds,
+        missing_is_stale=missing,
+    ):
+        stale.append("long_short_ratio")
+    if _metric_is_stale(
+        snap_ts=snap.ts,
+        metric_ts=snap.klines_1h_ts,
+        max_age_seconds=fresh.klines_max_age_seconds,
+        missing_is_stale=missing,
+    ):
+        stale.append("klines_1h")
+    return stale
+
+
 @dataclass
 class FiredRule:
     name: str
@@ -250,6 +303,19 @@ def evaluate(
     # (a single global value either spams alts or starves majors).
     sig = cfg.signals.for_symbol(snap.symbol)
 
+    # PR fix P0-7: hard-block gate. When enabled and any critical metric is
+    # stale or missing-ts, drop the entire candidate set up-front. Note this
+    # runs BEFORE the per-rule downgrade pass so funding/OI/LSR rules cannot
+    # even attempt to fire on stale data.
+    hard_stale = _check_hard_block_freshness(snap, sig.freshness)
+    if hard_stale:
+        log.info(
+            "freshness hard-block: dropping all candidates for %s due to stale: %s",
+            snap.symbol,
+            ",".join(hard_stale),
+        )
+        return []
+
     # Per-metric freshness verdicts. A stale metric short-circuits the
     # matching rule below regardless of the underlying value.
     stale = _check_freshness(snap, sig.freshness)
@@ -273,6 +339,8 @@ def evaluate(
                 long_rules.append(rule)
 
     if sig.predicted_funding.enabled and snap.predicted_funding_rate is not None and not stale["funding_extreme"]:
+        # Predicted funding has its own fixed-mode thresholds (PR fix P0-4) so
+        # the cold-start fallback is independent of the realized-funding rule.
         predicted_cfg = FundingExtremeCfg(
             enabled=sig.predicted_funding.enabled,
             mode=sig.predicted_funding.mode,
@@ -282,8 +350,8 @@ def evaluate(
             pct_high=sig.predicted_funding.pct_high,
             pct_low=sig.predicted_funding.pct_low,
             min_history_points=sig.predicted_funding.min_history_points,
-            long_overheated_above=sig.funding_extreme.long_overheated_above,
-            short_overheated_below=sig.funding_extreme.short_overheated_below,
+            long_overheated_above=sig.predicted_funding.long_overheated_above,
+            short_overheated_below=sig.predicted_funding.short_overheated_below,
         )
         predicted_fired = _evaluate_funding_extreme(
             snap.predicted_funding_rate,
