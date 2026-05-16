@@ -113,10 +113,19 @@ class Bot:
             window_minutes=cfg.signals.confluence_window_minutes,
         )
         # Per-symbol rolling funding-rate history. Backfilled at startup from
-        # /fapi/v1/fundingRate (~30 days) and updated on every poll. Drives
-        # the auto-mode z-score / percentile path of `funding_extreme`.
+        # /fapi/v1/fundingRate (~30 days) and updated on every NEW funding
+        # cycle (deduped via funding_rate_cycle_ts; PR fix P0-1). Drives the
+        # auto-mode z-score / percentile path of `funding_extreme`.
         # Sized for ~333 days of headroom (1000 pts × 8h cycles).
         self.funding_history = FundingHistoryCache(max_points=1000)
+        # Separate cache for the *predicted* funding rate stream (PR fix P0-4).
+        # Predicted funding drifts intra-cycle as mark/index/interest move,
+        # so every poll is a distinct observation -- the cache grows ~one
+        # entry per poll_interval_seconds. The realized cache cannot stand
+        # in for this distribution: realized is post-settlement, predicted
+        # is a pre-settlement forecast and the two series have different
+        # statistics. Sized for ~16h of headroom at the 60s default cadence.
+        self.predicted_funding_history = FundingHistoryCache(max_points=1000)
 
     def request_stop(self) -> None:
         self._stop.set()
@@ -141,7 +150,7 @@ class Bot:
             await self.liq_stream.stop()
 
     async def _backfill_funding_history(self) -> None:
-        """Seed `self.funding_history` from Binance for every watched symbol.
+        """Seed funding history caches from Binance for every watched symbol.
 
         Fired once at startup. Each call returns up to 1000 8h funding points
         (~333 days). We fetch the full window so future lookback knobs (e.g.
@@ -154,6 +163,12 @@ class Bot:
                 log.warning("funding history backfill for %s failed: %s", symbol, e)
                 continue
             n = self.funding_history.backfill(symbol, points)
+            # PR fix P0-4: seed predicted-funding cache with realized history
+            # as a cold-start proxy so z/p have something to compare against
+            # while the predicted series is still gathering points. Once the
+            # predicted series exceeds min_history_points, evictions naturally
+            # take over and the realized seed rolls out of the lookback window.
+            self.predicted_funding_history.backfill(symbol, points)
             log.info("funding history backfilled for %s: %d points", symbol, n)
 
     # ---------- loops ----------
@@ -175,9 +190,11 @@ class Bot:
                         cvd_window_bars=sig.taker_confirmation.cvd_window_bars,
                         oi_quality_epsilon_pct=sig.oi_surge.quality_epsilon_pct,
                         predicted_funding_cap=sig.predicted_funding.funding_cap,
+                        predicted_funding_interest_clamp_abs=sig.predicted_funding.interest_clamp_abs,
                         regime_enabled=sig.regime.enabled,
                         regime_adx_period=sig.regime.adx_period,
                         regime_cfg=sig.regime,
+                        ema_period=sig.trend_filter.ema_period,
                     )
                 except Exception as e:
                     log.warning("snapshot for %s failed: %s", symbol, e)
@@ -246,8 +263,10 @@ class Bot:
                         cvd_window_bars=sig.taker_confirmation.cvd_window_bars,
                         oi_quality_epsilon_pct=sig.oi_surge.quality_epsilon_pct,
                         predicted_funding_cap=sig.predicted_funding.funding_cap,
+                        predicted_funding_interest_clamp_abs=sig.predicted_funding.interest_clamp_abs,
                         regime_enabled=sig.regime.enabled,
                         regime_adx_period=sig.regime.adx_period,
+                        ema_period=sig.trend_filter.ema_period,
                         regime_cfg=sig.regime,
                     )
                 except Exception as e:
@@ -406,10 +425,14 @@ class Bot:
     # ---------- snapshot augmentation ----------
 
     def _augment_with_funding_stats(self, snap: Snapshot) -> None:
-        """Stamp realized + predicted funding stats against realized history."""
-        if snap.funding_rate is not None and snap.funding_rate_ts is not None:
-            self.funding_history.update(snap.symbol, snap.funding_rate_ts, snap.funding_rate)
+        """Stamp realized + predicted funding stats against their own histories.
 
+        Order matters (PR fix P0-2): we compute z/p BEFORE pushing the current
+        observation into the cache so the current point is not part of its own
+        statistic (lookahead/self-inclusion bias). For the realized cache we
+        further dedupe by funding_rate_cycle_ts (PR fix P0-1) so 480 polls in
+        the same 8h cycle don't each insert a duplicate observation.
+        """
         funding_cfg = self.cfg.signals.for_symbol(snap.symbol).funding_extreme
         if snap.funding_rate is not None and funding_cfg.mode == "auto":
             snap.funding_rate_zscore = self.funding_history.zscore(
@@ -429,19 +452,34 @@ class Bot:
 
         predicted_cfg = self.cfg.signals.for_symbol(snap.symbol).predicted_funding
         if snap.predicted_funding_rate is not None and predicted_cfg.mode == "auto":
-            snap.predicted_funding_zscore = self.funding_history.zscore(
+            # PR fix P0-4: compare against the *predicted* funding distribution.
+            snap.predicted_funding_zscore = self.predicted_funding_history.zscore(
                 symbol=snap.symbol,
                 value=snap.predicted_funding_rate,
                 now=snap.ts,
                 lookback_days=predicted_cfg.zscore_lookback_days,
                 min_points=predicted_cfg.min_history_points,
             )
-            snap.predicted_funding_percentile = self.funding_history.percentile_rank(
+            snap.predicted_funding_percentile = self.predicted_funding_history.percentile_rank(
                 symbol=snap.symbol,
                 value=snap.predicted_funding_rate,
                 now=snap.ts,
                 lookback_days=predicted_cfg.pct_lookback_days,
                 min_points=predicted_cfg.min_history_points,
+            )
+
+        # ── update caches AFTER z/p are stamped ───────────────────────────
+        # PR fix P0-1: realized cache uses funding_rate_cycle_ts (8h cadence)
+        # so the same value is only stored once per Binance funding cycle.
+        if snap.funding_rate is not None and snap.funding_rate_cycle_ts is not None:
+            self.funding_history.update(
+                snap.symbol, snap.funding_rate_cycle_ts, snap.funding_rate
+            )
+        # Predicted cache uses the poll ts -- predicted funding drifts inside
+        # a cycle as mark/index move, so each poll is a unique observation.
+        if snap.predicted_funding_rate is not None and snap.predicted_funding_ts is not None:
+            self.predicted_funding_history.update(
+                snap.symbol, snap.predicted_funding_ts, snap.predicted_funding_rate
             )
 
     # ---------- entry / exit handling ----------

@@ -54,6 +54,9 @@ class FundingExtremeCfg(BaseModel):
 class PredictedFundingCfg(BaseModel):
     enabled: bool = False
     funding_cap: float = 0.0075
+    # Binance formula: predicted = premium + clamp(interest_rate - premium, ±interest_clamp_abs).
+    # Default 0.05% / 8h matches the Binance fee-side bound on interest_rate.
+    interest_clamp_abs: float = 0.0005
     mode: str = "auto"
     zscore_lookback_days: int = 14
     zscore_high_abs: float = 2.0
@@ -61,6 +64,8 @@ class PredictedFundingCfg(BaseModel):
     pct_high: float = 0.95
     pct_low: float = 0.05
     min_history_points: int = 20
+    long_overheated_above: float = 0.0008
+    short_overheated_below: float = -0.0005
 
 
 class RegimeCfg(BaseModel):
@@ -158,6 +163,19 @@ class FreshnessCfg(BaseModel):
     # LSR buckets close every 5 minutes upstream; allow up to 10min before
     # we treat the value as stale.
     long_short_ratio_max_age_seconds: int = 600
+    # Klines and predicted funding are derived from per-poll REST fetches.
+    klines_max_age_seconds: int = 120
+    predicted_funding_max_age_seconds: int = 120
+    # When True, ANY critical metric missing or stale aborts the entire
+    # candidate set (returns []). When False (in-code default for backwards
+    # compatibility with existing unit tests), only the matching rule is
+    # skipped (legacy behavior). config.yaml flips this to True so the
+    # deployed bot always hard-blocks (PR fix P0-7).
+    hard_block_on_stale: bool = False
+    # Missing timestamps are treated as stale when this is True. Default
+    # False keeps legacy semantics for code-level fixtures; config.yaml
+    # turns it on so a never-populated metric cannot silently pass.
+    missing_ts_is_stale: bool = False
 
 
 class SymbolOverridesCfg(BaseModel):
