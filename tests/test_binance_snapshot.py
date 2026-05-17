@@ -488,10 +488,12 @@ async def test_build_snapshot_default_mode_keeps_indicator_inputs_unchanged():
     assert first_call.kwargs["limit"] == 61
 
 
-def test_short_klines_limit_accounts_for_cvd_window() -> None:
-    assert _short_klines_limit(ema_period=50, slope_window_bars=6, cvd_window_bars=6) == 61
-    assert _short_klines_limit(ema_period=50, slope_window_bars=6, cvd_window_bars=24) == 61
-    assert _short_klines_limit(ema_period=50, slope_window_bars=6, cvd_window_bars=80) == 85
+def test_short_klines_limit_accounts_for_cvd_and_atr_windows() -> None:
+    assert _short_klines_limit(ema_period=50, slope_window_bars=6, atr_period=14, cvd_window_bars=6) == 61
+    assert _short_klines_limit(ema_period=50, slope_window_bars=6, atr_period=14, cvd_window_bars=24) == 61
+    assert _short_klines_limit(ema_period=50, slope_window_bars=6, atr_period=14, cvd_window_bars=80) == 85
+    assert _short_klines_limit(ema_period=50, slope_window_bars=6, atr_period=56, cvd_window_bars=6) == 61
+    assert _short_klines_limit(ema_period=10, slope_window_bars=2, atr_period=56, cvd_window_bars=6) == 61
 
 
 @pytest.mark.asyncio
@@ -544,3 +546,84 @@ async def test_build_snapshot_passes_configured_cvd_window_24(monkeypatch):
     await build_snapshot(client, liq_stream, "BTCUSDT", oi_window_minutes=60, cvd_window_bars=24)
 
     assert cvd_windows == [24]
+
+
+@pytest.mark.asyncio
+async def test_build_snapshot_default_passes_atr_period_14(monkeypatch):
+    client = AsyncMock()
+    client.funding_rate.return_value = 0.0
+    client.open_interest_usd.return_value = 1_000_000.0
+    client.top_long_short_position_ratio.return_value = 1.0
+    client.latest_price.return_value = 100.0
+    client.open_interest_history.return_value = []
+    client.klines = AsyncMock(return_value=_trending_klines())
+
+    liq_stream = AsyncMock()
+    liq_stream.totals = lambda _symbol: (0.0, 0.0)
+
+    atr_periods: list[int] = []
+
+    def _spy_kline_derivatives(_klines, *, _slope_window_bars=6, atr_period=14):
+        atr_periods.append(atr_period)
+        return (0.0, 100.0, 1.0, 0.0)
+
+    monkeypatch.setattr("crypto_flow_bot.data.binance._kline_derivatives", _spy_kline_derivatives)
+
+    await build_snapshot(client, liq_stream, "BTCUSDT", oi_window_minutes=60)
+
+    assert atr_periods[0] == 14
+
+
+@pytest.mark.asyncio
+async def test_build_snapshot_passes_configured_atr_period_56(monkeypatch):
+    client = AsyncMock()
+    client.funding_rate.return_value = 0.0
+    client.open_interest_usd.return_value = 1_000_000.0
+    client.top_long_short_position_ratio.return_value = 1.0
+    client.latest_price.return_value = 100.0
+    client.open_interest_history.return_value = []
+    client.klines = AsyncMock(return_value=_trending_klines())
+
+    liq_stream = AsyncMock()
+    liq_stream.totals = lambda _symbol: (0.0, 0.0)
+
+    atr_periods: list[int] = []
+
+    def _spy_kline_derivatives(_klines, *, _slope_window_bars=6, atr_period=14):
+        atr_periods.append(atr_period)
+        return (0.0, 100.0, 1.0, 0.0)
+
+    monkeypatch.setattr("crypto_flow_bot.data.binance._kline_derivatives", _spy_kline_derivatives)
+
+    await build_snapshot(client, liq_stream, "BTCUSDT", oi_window_minutes=60, atr_period=56)
+
+    assert atr_periods[0] == 56
+
+
+@pytest.mark.asyncio
+async def test_build_snapshot_short_kline_limit_covers_atr_period_56():
+    client = AsyncMock()
+    client.funding_rate.return_value = 0.0
+    client.open_interest_usd.return_value = 1_000_000.0
+    client.top_long_short_position_ratio.return_value = 1.0
+    client.latest_price.return_value = 100.0
+    client.open_interest_history.return_value = []
+    client.klines = AsyncMock(return_value=_trending_klines())
+
+    liq_stream = AsyncMock()
+    liq_stream.totals = lambda _symbol: (0.0, 0.0)
+
+    await build_snapshot(
+        client,
+        liq_stream,
+        "BTCUSDT",
+        oi_window_minutes=60,
+        ema_period=10,
+        slope_window_bars=2,
+        atr_period=56,
+        cvd_window_bars=6,
+    )
+
+    first_call = client.klines.await_args_list[0]
+    assert first_call.args[1] == "1h"
+    assert first_call.kwargs["limit"] == 61

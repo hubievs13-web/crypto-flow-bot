@@ -118,6 +118,7 @@ signals:
     require_4h_slope_alignment: true
     slope_window_bars: 6
     slope_window_bars_4h: 6
+    atr_period: 14
     slope_min_abs: 0.0005
     # Hard-block enabled (PR fix P0-6). Counter-trend signals must be dropped,
     # not just downgraded -- a misaligned strong rule pre-fix could still
