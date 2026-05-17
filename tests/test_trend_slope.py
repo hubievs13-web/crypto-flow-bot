@@ -32,6 +32,8 @@ def test_4h_misalignment_downgrades_and_hard_block_drops():
     out = evaluate(snap, _cfg())
     short = [c for c in out if c.direction is Direction.SHORT][0]
     assert short.is_strong is False
+    assert any(r.name == "trend_4h" for r in short.entry_downgrades)
+    assert all(r.name != "trend_4h" for r in short.fired_rules)
     cfg = _cfg()
     cfg.signals.trend_filter.hard_block_on_4h = True
     out2 = evaluate(snap, cfg)
@@ -43,6 +45,8 @@ def test_1h_slope_misalignment_downgrades():
     out = evaluate(snap, _cfg())
     short = [c for c in out if c.direction is Direction.SHORT][0]
     assert short.is_strong is False
+    assert any(r.name == "slope_1h" for r in short.entry_downgrades)
+    assert all(r.name != "slope_1h" for r in short.fired_rules)
 
 
 def test_aligned_candidate_untouched_and_missing_passes_through():
@@ -50,10 +54,12 @@ def test_aligned_candidate_untouched_and_missing_passes_through():
     out1 = evaluate(s1, _cfg())
     c1 = [c for c in out1 if c.direction is Direction.SHORT][0]
     assert all(r.name not in {"trend_4h", "slope_1h"} for r in c1.fired_rules)
+    assert all(r.name not in {"trend_4h", "slope_1h"} for r in c1.entry_downgrades)
     s2 = _snap(long_short_ratio=2.7, open_interest_change_pct_window=0.07, price_change_pct_1h=0.01)
     out2 = evaluate(s2, _cfg())
     c2 = [c for c in out2 if c.direction is Direction.SHORT][0]
     assert all(r.name not in {"trend_4h", "slope_1h"} for r in c2.fired_rules)
+    assert all(r.name not in {"trend_4h", "slope_1h"} for r in c2.entry_downgrades)
 
 
 def test_liq_cascade_exempt_from_trend_slope_gates():
@@ -62,3 +68,5 @@ def test_liq_cascade_exempt_from_trend_slope_gates():
     short = [c for c in out if c.direction is Direction.SHORT][0]
     assert all(r.name != "trend_4h" for r in short.fired_rules)
     assert all(r.name != "slope_1h" for r in short.fired_rules)
+    assert all(r.name != "trend_4h" for r in short.entry_downgrades)
+    assert all(r.name != "slope_1h" for r in short.entry_downgrades)
