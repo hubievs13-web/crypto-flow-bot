@@ -288,6 +288,15 @@ def test_startup_advertises_atr_based_sl_when_atr_enabled():
     assert "<b>Exits:</b> SL 1.50%" not in text
 
 
+def test_startup_advertises_short_timeframe_label_from_config():
+    cfg = _per_symbol_cfg()
+    cfg.signals.timeframe_short = "15m"
+    alert = format_startup(cfg, version="x")
+    text = alert.text
+    assert "ATR(15m)" in text
+    assert "ATR(1h)" not in text
+
+
 def test_startup_falls_back_to_pct_when_atr_disabled():
     cfg = _per_symbol_cfg()
     cfg.exits.atr_sizing.enabled = False

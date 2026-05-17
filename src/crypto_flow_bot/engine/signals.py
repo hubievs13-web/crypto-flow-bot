@@ -396,6 +396,8 @@ def evaluate(
             else:
                 long_rules.append(rule)
 
+    short_tf_label = sig.timeframe_short
+
     if (
         sig.oi_surge.enabled
         and snap.open_interest_change_pct_window is not None
@@ -419,13 +421,21 @@ def evaluate(
         elif quality == "healthy_short" and price_pct is not None and oi_pct > 0:
             short_rules.append(
                 FiredRule(
-                    name="oi_surge", description=f"OI +{oi_pct * 100:.1f}% + price {price_pct * 100:+.2f}% / 1h (fresh longs)",
+                    name="oi_surge",
+                    description=(
+                        f"OI +{oi_pct * 100:.1f}% + price {price_pct * 100:+.2f}% / "
+                        f"{short_tf_label} (fresh longs)"
+                    ),
                 )
             )
         elif quality == "healthy_long" and price_pct is not None and oi_pct > 0:
             long_rules.append(
                 FiredRule(
-                    name="oi_surge", description=f"OI +{oi_pct * 100:.1f}% + price {price_pct * 100:+.2f}% / 1h (fresh shorts)",
+                    name="oi_surge",
+                    description=(
+                        f"OI +{oi_pct * 100:.1f}% + price {price_pct * 100:+.2f}% / "
+                        f"{short_tf_label} (fresh shorts)"
+                    ),
                 )
             )
         elif (
@@ -436,13 +446,21 @@ def evaluate(
             if price_pct > 0:
                 long_rules.append(
                     FiredRule(
-                        name="oi_surge", description=f"OI +{oi_pct * 100:.1f}% + price {price_pct * 100:+.2f}% / 1h (fresh longs)",
+                        name="oi_surge",
+                        description=(
+                            f"OI +{oi_pct * 100:.1f}% + price {price_pct * 100:+.2f}% / "
+                            f"{short_tf_label} (fresh longs)"
+                        ),
                     )
                 )
             elif price_pct < 0:
                 short_rules.append(
                     FiredRule(
-                        name="oi_surge", description=f"OI +{oi_pct * 100:.1f}% + price {price_pct * 100:+.2f}% / 1h (fresh shorts)",
+                        name="oi_surge",
+                        description=(
+                            f"OI +{oi_pct * 100:.1f}% + price {price_pct * 100:+.2f}% / "
+                            f"{short_tf_label} (fresh shorts)"
+                        ),
                     )
                 )
 

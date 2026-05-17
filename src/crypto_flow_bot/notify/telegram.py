@@ -15,6 +15,11 @@ from crypto_flow_bot.engine.signals import SignalCandidate
 
 log = logging.getLogger(__name__)
 
+
+def _short_tf_label(cfg: Config) -> str:
+    """User-facing short timeframe label (defaults to 1h)."""
+    return cfg.signals.timeframe_short
+
 def _mask_telegram_token(value: Any) -> str:
     """Mask Telegram bot tokens in URL-like strings for safe logging."""
     if value is None:
@@ -272,7 +277,7 @@ def format_startup(cfg: Config, version: str) -> Alert:
     if atr.enabled:
         tp_mults = " / ".join(f"{m:g}×ATR" for m in atr.tp_atr_mults)
         exits_text = (
-            f"<b>Exits:</b> SL {atr.sl_atr_mult:g}×ATR(1h) · "
+            f"<b>Exits:</b> SL {atr.sl_atr_mult:g}×ATR({_short_tf_label(cfg)}) · "
             f"TP ladder {tp_mults} (STRONG → last TP {atr.strong_last_tp_mult:g}×ATR) · "
             f"time stop {cfg.exits.time_stop_minutes}min"
         )
