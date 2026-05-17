@@ -1,6 +1,16 @@
 from datetime import UTC, datetime, timedelta
 
-from crypto_flow_bot.config import Config, SignalsCfg
+from crypto_flow_bot.config import (
+    Config,
+    FreshnessCfg,
+    FundingExtremeCfg,
+    LiqCascadeCfg,
+    LsrExtremeCfg,
+    OiSurgeCfg,
+    PredictedFundingCfg,
+    SignalsCfg,
+    SymbolOverridesCfg,
+)
 from crypto_flow_bot.engine.models import Direction, Snapshot
 from crypto_flow_bot.engine.signals import ConfluenceCache, evaluate
 
@@ -12,6 +22,11 @@ def _cfg(funding_requires_confirmation: bool = True) -> Config:
             funding_extreme_requires_confirmation=funding_requires_confirmation,
         ),
     )
+
+
+def _base_cfg(**signals_kw) -> Config:
+    signals = SignalsCfg(funding_extreme_requires_confirmation=False, **signals_kw)
+    return Config(symbols=["BTCUSDT"], signals=signals)
 
 
 def _snap(**overrides) -> Snapshot:
@@ -272,13 +287,6 @@ def test_rules_split_across_directions_not_strong_for_either():
 
 # ─── Per-symbol threshold overrides ────────────────────────────────────────
 
-from crypto_flow_bot.config import (  # noqa: E402
-    FundingExtremeCfg,
-    LiqCascadeCfg,
-    LsrExtremeCfg,
-    SymbolOverridesCfg,
-)
-
 
 def _cfg_with_per_symbol(funding_requires_confirmation: bool = False) -> Config:
     """Two symbols: BTC has very tight thresholds, SOL has loose ones.
@@ -436,3 +444,131 @@ def test_freshness_per_metric_zero_disables_individual_gate():
     out = evaluate(snap, cfg)
     rule_names = {r.name for c in out for r in c.fired_rules}
     assert "funding_extreme" in rule_names
+
+
+def test_predicted_funding_fires_when_realized_ts_is_stale():
+    """Predicted-funding rule must NOT be blocked by a stale realized
+    funding_rate_ts after P0-2 (separate freshness keys)."""
+    fresh = FreshnessCfg(
+        enabled=True,
+        funding_max_age_seconds=60,
+        predicted_funding_max_age_seconds=120,
+    )
+    cfg = _base_cfg(
+        freshness=fresh,
+        predicted_funding=PredictedFundingCfg(
+            enabled=True, mode="fixed",
+            long_overheated_above=0.001, short_overheated_below=-0.001,
+        ),
+        oi_surge=OiSurgeCfg(enabled=False),
+        lsr_extreme=LsrExtremeCfg(enabled=False),
+        liq_cascade=LiqCascadeCfg(enabled=False),
+    )
+    now = datetime(2026, 5, 1, 12, 0, tzinfo=UTC)
+    snap = _snap(
+        ts=now,
+        funding_rate=0.0,
+        funding_rate_ts=now - timedelta(minutes=5),    # STALE (realized)
+        predicted_funding_rate=0.0015,                  # > +0.001 threshold
+        predicted_funding_ts=now,                       # FRESH (predicted)
+    )
+    out = evaluate(snap, cfg)
+    assert any(c.direction is Direction.SHORT for c in out), \
+        "stale realized ts must not gate the predicted-funding rule"
+
+
+def test_predicted_funding_blocked_when_predicted_ts_is_stale():
+    """A stale predicted_funding_ts blocks ONLY the predicted rule;
+    realized-funding rule must still fire."""
+    fresh = FreshnessCfg(
+        enabled=True,
+        funding_max_age_seconds=120,
+        predicted_funding_max_age_seconds=60,
+    )
+    cfg = _base_cfg(
+        freshness=fresh,
+        funding_extreme=FundingExtremeCfg(
+            enabled=True, mode="fixed",
+            long_overheated_above=0.0001, short_overheated_below=-0.0001,
+        ),
+        predicted_funding=PredictedFundingCfg(
+            enabled=True, mode="fixed",
+            long_overheated_above=0.001, short_overheated_below=-0.001,
+        ),
+        oi_surge=OiSurgeCfg(enabled=False),
+        lsr_extreme=LsrExtremeCfg(enabled=False),
+        liq_cascade=LiqCascadeCfg(enabled=False),
+    )
+    now = datetime(2026, 5, 1, 12, 0, tzinfo=UTC)
+    snap = _snap(
+        ts=now,
+        funding_rate=0.0002,                            # > +0.0001 threshold
+        funding_rate_ts=now,                            # FRESH (realized)
+        predicted_funding_rate=0.0015,                  # > +0.001 threshold
+        predicted_funding_ts=now - timedelta(minutes=5),# STALE (predicted)
+    )
+    out = evaluate(snap, cfg)
+    names = {r.name for c in out for r in c.fired_rules}
+    assert "funding_extreme" in names, "realized funding must still fire"
+    assert "predicted_funding_extreme" not in names, \
+        "stale predicted ts must drop the predicted rule"
+
+
+def test_hard_block_freshness_includes_predicted_when_enabled():
+    """When `predicted_funding.enabled=True` and hard-block is on, a stale
+    predicted_funding_ts must abort the entire candidate set."""
+    fresh = FreshnessCfg(
+        enabled=True,
+        hard_block_on_stale=True,
+        missing_ts_is_stale=False,
+        funding_max_age_seconds=120,
+        predicted_funding_max_age_seconds=60,
+    )
+    cfg = _base_cfg(
+        freshness=fresh,
+        predicted_funding=PredictedFundingCfg(enabled=True),
+        oi_surge=OiSurgeCfg(enabled=False),
+        lsr_extreme=LsrExtremeCfg(enabled=False),
+        liq_cascade=LiqCascadeCfg(enabled=True),
+    )
+    now = datetime(2026, 5, 1, 12, 0, tzinfo=UTC)
+    # liq_cascade would normally fire, but predicted ts is stale -> drop all.
+    snap = _snap(
+        ts=now,
+        funding_rate=0.0001, funding_rate_ts=now,
+        open_interest_ts=now, long_short_ratio_ts=now, klines_1h_ts=now,
+        predicted_funding_rate=0.001,
+        predicted_funding_ts=now - timedelta(minutes=5),
+        long_liquidations_usd_window=80_000_000.0,
+    )
+    assert evaluate(snap, cfg) == []
+
+
+def test_hard_block_freshness_skips_predicted_when_disabled():
+    """When `predicted_funding.enabled=False`, stale predicted_funding_ts
+    must NOT contribute to hard-block."""
+    fresh = FreshnessCfg(
+        enabled=True,
+        hard_block_on_stale=True,
+        missing_ts_is_stale=False,
+        funding_max_age_seconds=120,
+        predicted_funding_max_age_seconds=60,
+    )
+    cfg = _base_cfg(
+        freshness=fresh,
+        predicted_funding=PredictedFundingCfg(enabled=False),
+        oi_surge=OiSurgeCfg(enabled=False),
+        lsr_extreme=LsrExtremeCfg(enabled=False),
+        liq_cascade=LiqCascadeCfg(enabled=True),
+    )
+    now = datetime(2026, 5, 1, 12, 0, tzinfo=UTC)
+    snap = _snap(
+        ts=now,
+        funding_rate=0.0001, funding_rate_ts=now,
+        open_interest_ts=now, long_short_ratio_ts=now, klines_1h_ts=now,
+        predicted_funding_ts=now - timedelta(minutes=5),  # would be stale, but disabled
+        long_liquidations_usd_window=80_000_000.0,
+    )
+    out = evaluate(snap, cfg)
+    assert any(c.direction is Direction.LONG for c in out), \
+        "stale predicted ts must be ignored when predicted_funding is disabled"
