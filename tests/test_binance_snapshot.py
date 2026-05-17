@@ -14,6 +14,7 @@ import pytest
 
 from crypto_flow_bot.data.binance import (
     _kline_derivatives,
+    _oi_history_limit,
     _taker_quote_volumes,
     build_snapshot,
 )
@@ -94,6 +95,20 @@ def test_taker_quote_volumes_returns_none_on_malformed_fields():
         [0, "0", "0", "0", "0", "0", 0, "0", 0, "0", "0", "0"],
     ]
     assert _taker_quote_volumes(bars) == (None, None)
+
+
+@pytest.mark.parametrize(
+    ("window_minutes", "expected_limit"),
+    [
+        (60, 13),
+        (30, 7),
+        (15, 4),
+        (61, 14),
+        (1, 2),
+    ],
+)
+def test_oi_history_limit(window_minutes: int, expected_limit: int):
+    assert _oi_history_limit(window_minutes) == expected_limit
 
 
 # ─── build_snapshot orchestration ───────────────────────────────────────────

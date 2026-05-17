@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 from datetime import UTC, datetime, timedelta
 from typing import TypedDict
 
@@ -356,6 +357,10 @@ def _classify_oi_quality(
     return None
 
 
+def _oi_history_limit(window_minutes: int) -> int:
+    return max(2, math.ceil(window_minutes / 5) + 1)
+
+
 async def build_snapshot(
     client: BinanceClient,
     liq_stream: LiquidationStream,
@@ -391,7 +396,7 @@ async def build_snapshot(
     lsr = await client.top_long_short_position_ratio(symbol)
     price = await client.latest_price(symbol)
     oi_hist = await client.open_interest_history(
-        symbol, period="5m", limit=max(2, oi_window_minutes // 5 + 1)
+        symbol, period="5m", limit=_oi_history_limit(oi_window_minutes)
     )
     # PR fix P0-5: limit must be >= ema_period + slope_window_bars + 1 in-progress
     # bar so that _kline_derivatives can compute the EMA slope. Default 51 only
