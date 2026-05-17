@@ -123,7 +123,21 @@ def format_entry_alert(candidate: SignalCandidate, position: Position, cfg: Conf
         for i, lvl in enumerate(position.tp_levels)
     )
     # SL distance derived from the actual position (so ATR-sized stops display correctly).
-    sl_pct = (position.stop_loss_price - position.entry_price) / position.entry_price * position.direction.sign
+    sl_pct = 0.0
+    if position.entry_price > 0:
+        sl_pct = (
+            (position.stop_loss_price - position.entry_price) / position.entry_price * position.direction.sign
+        )
+    trailing_activate_pct = cfg.exits.trailing.activate_at_pct
+    if (
+        position.entry_atr_1h is not None
+        and cfg.exits.trailing.activate_at_atr_mult is not None
+        and position.entry_price > 0
+    ):
+        trailing_activate_pct = (
+            cfg.exits.trailing.activate_at_atr_mult * position.entry_atr_1h / position.entry_price
+        )
+
     text = (
         f"{arrow} <b>{side} {sym}</b> @ <code>{position.entry_price:g}</code>{strong_tag}\n"
         f"<i>{position.id}</i>\n"
@@ -137,7 +151,7 @@ def format_entry_alert(candidate: SignalCandidate, position: Position, cfg: Conf
         f"  SL: <code>{position.stop_loss_price:g}</code>  ({sl_pct * 100:+.2f}%)\n"
         f"{tp_lines}\n"
         f"  Trailing: " + (
-            f"after {cfg.exits.trailing.activate_at_pct * 100:.2f}% lock {cfg.exits.trailing.lock_in_pct * 100:+.2f}%"
+            f"after {trailing_activate_pct * 100:.2f}% lock {cfg.exits.trailing.lock_in_pct * 100:+.2f}%"
             if cfg.exits.trailing.enabled
             else "off"
         ) + "\n"
