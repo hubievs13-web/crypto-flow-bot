@@ -130,7 +130,7 @@ def _trending_klines(n: int = 52) -> list[list]:
     return [_kline_row(100.0 + i) for i in range(n)]
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_build_snapshot_populates_freshness_timestamps():
     """build_snapshot must stamp every real-time metric with a freshness
     timestamp so the signals freshness gate has something to compare."""
@@ -157,7 +157,7 @@ async def test_build_snapshot_populates_freshness_timestamps():
         assert before <= ts <= after
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_build_snapshot_populates_4h_kline_derivatives_when_enabled():
     """With `enable_4h_klines=True` (default), `klines` is called twice
     (once for 1h, once for 4h) and the snapshot carries 4h EMA/ATR/pct fields."""
@@ -184,7 +184,7 @@ async def test_build_snapshot_populates_4h_kline_derivatives_when_enabled():
     assert snap.atr_4h is not None
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_build_snapshot_skips_4h_when_disabled():
     """With `enable_4h_klines=False` only the 1h kline call happens and
     the 4h fields are left as None — saves one REST roundtrip per cycle."""
@@ -210,7 +210,7 @@ async def test_build_snapshot_skips_4h_when_disabled():
     assert snap.atr_4h is None
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_build_snapshot_populates_taker_volumes_from_1h_kline():
     """taker_buy_quote_1h / taker_sell_quote_1h must be sourced from the
     last fully-closed 1h bar (not the in-progress one) and sum to total qv."""
@@ -235,7 +235,7 @@ async def test_build_snapshot_populates_taker_volumes_from_1h_kline():
     assert snap.taker_sell_quote_1h == 300.0
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_build_snapshot_to_log_dict_is_json_serializable():
     """Per-metric freshness timestamps must be flattened to ISO strings
     in `to_log_dict()` so the JSONL writer doesn't choke on datetime."""
@@ -257,7 +257,7 @@ async def test_build_snapshot_to_log_dict_is_json_serializable():
     json.dumps(snap.to_log_dict())
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_build_snapshot_forwards_predicted_funding_interest_clamp_abs(monkeypatch):
     client = AsyncMock()
     client.funding_rate.return_value = 0.0
@@ -302,7 +302,7 @@ async def test_build_snapshot_forwards_predicted_funding_interest_clamp_abs(monk
 # ─── funding_rate_history parser ────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_funding_rate_history_parses_and_sorts():
     """The Binance /fapi/v1/fundingRate response is a list of dicts with
     fundingTime (ms epoch) and fundingRate (str). The client must convert
@@ -328,7 +328,7 @@ async def test_funding_rate_history_parses_and_sorts():
     assert all(ts.tzinfo == UTC for ts, _rate in out)
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_funding_rate_history_skips_malformed_rows():
     """Defensive: a single bad row from upstream must not nuke the whole list."""
     from crypto_flow_bot.data.binance import BinanceClient
@@ -348,7 +348,7 @@ async def test_funding_rate_history_skips_malformed_rows():
     assert [rate for _ts, rate in out] == [0.0001, 0.0003]
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_top_long_short_position_ratio_handles_empty_list():
     from crypto_flow_bot.data.binance import BinanceClient
 
@@ -357,7 +357,7 @@ async def test_top_long_short_position_ratio_handles_empty_list():
     assert await client.top_long_short_position_ratio("BTCUSDT") is None
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_top_long_short_position_ratio_handles_missing_key():
     from crypto_flow_bot.data.binance import BinanceClient
 
@@ -366,7 +366,7 @@ async def test_top_long_short_position_ratio_handles_missing_key():
     assert await client.top_long_short_position_ratio("BTCUSDT") is None
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_top_long_short_position_ratio_handles_invalid_ratio_value():
     from crypto_flow_bot.data.binance import BinanceClient
 
@@ -375,7 +375,7 @@ async def test_top_long_short_position_ratio_handles_invalid_ratio_value():
     assert await client.top_long_short_position_ratio("BTCUSDT") is None
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_top_long_short_position_ratio_parses_valid_value():
     from crypto_flow_bot.data.binance import BinanceClient
 
@@ -384,7 +384,7 @@ async def test_top_long_short_position_ratio_parses_valid_value():
     assert await client.top_long_short_position_ratio("BTCUSDT") == 1.234
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_build_snapshot_dry_run_validates_inactive_15m_example_config():
     cfg = load_config(Path("configs/config.15m.example.yaml"))
 
@@ -439,7 +439,7 @@ async def test_build_snapshot_dry_run_validates_inactive_15m_example_config():
 
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_build_snapshot_uses_separate_short_and_4h_limits_and_slope_windows(monkeypatch):
     client = AsyncMock()
     client.funding_rate.return_value = 0.0
@@ -493,7 +493,7 @@ async def test_build_snapshot_uses_separate_short_and_4h_limits_and_slope_window
     assert ema_periods == [50, 50]
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_build_snapshot_default_mode_keeps_1h_and_4h_limits_at_61():
     client = AsyncMock()
     client.funding_rate.return_value = 0.0
@@ -516,7 +516,7 @@ async def test_build_snapshot_default_mode_keeps_1h_and_4h_limits_at_61():
     assert second_call.kwargs["limit"] == 61
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_build_snapshot_default_mode_keeps_indicator_inputs_unchanged():
     client = AsyncMock()
     client.funding_rate.return_value = 0.0
@@ -538,7 +538,7 @@ async def test_build_snapshot_default_mode_keeps_indicator_inputs_unchanged():
 
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_build_snapshot_reuses_short_klines_for_regime_when_timeframes_match(monkeypatch):
     client = AsyncMock()
     client.funding_rate.return_value = 0.0
@@ -579,7 +579,7 @@ async def test_build_snapshot_reuses_short_klines_for_regime_when_timeframes_mat
     assert adx_periods == [14]
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_build_snapshot_splits_short_and_regime_klines_when_timeframes_differ(monkeypatch):
     short_klines = _trending_klines()
     regime_klines = [_kline_row(1_000.0 + i) for i in range(52)]
@@ -660,7 +660,7 @@ def test_short_klines_limit_accounts_for_cvd_and_atr_windows() -> None:
     assert _short_klines_limit(ema_period=10, slope_window_bars=2, atr_period=56, cvd_window_bars=6) == 61
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_build_snapshot_default_passes_cvd_window_6(monkeypatch):
     client = AsyncMock()
     client.funding_rate.return_value = 0.0
@@ -686,7 +686,7 @@ async def test_build_snapshot_default_passes_cvd_window_6(monkeypatch):
     assert cvd_windows == [6]
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_build_snapshot_passes_configured_cvd_window_24(monkeypatch):
     client = AsyncMock()
     client.funding_rate.return_value = 0.0
@@ -712,7 +712,7 @@ async def test_build_snapshot_passes_configured_cvd_window_24(monkeypatch):
     assert cvd_windows == [24]
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_build_snapshot_default_passes_atr_period_14(monkeypatch):
     client = AsyncMock()
     client.funding_rate.return_value = 0.0
@@ -750,7 +750,7 @@ async def test_build_snapshot_default_passes_atr_period_14(monkeypatch):
     assert ema_periods == [50, 50]
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_build_snapshot_passes_configured_ema_period_200(monkeypatch):
     client = AsyncMock()
     client.funding_rate.return_value = 0.0
@@ -797,7 +797,7 @@ async def test_build_snapshot_passes_configured_ema_period_200(monkeypatch):
     assert ema_periods == [200, 200]
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_build_snapshot_short_kline_limit_covers_atr_period_56():
     client = AsyncMock()
     client.funding_rate.return_value = 0.0

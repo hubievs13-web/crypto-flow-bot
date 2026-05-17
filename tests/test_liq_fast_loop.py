@@ -87,7 +87,7 @@ def _liq_cfg(threshold: float = 1_000_000.0) -> Config:
 # ─── Fast-loop trigger behavior ─────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_fast_loop_fires_alert_when_long_liq_window_crosses_threshold(tmp_path):
     """Long-side liq flush above threshold → LONG entry opened, alert sent."""
     cfg = _liq_cfg(threshold=1_000_000.0)
@@ -111,7 +111,7 @@ async def test_fast_loop_fires_alert_when_long_liq_window_crosses_threshold(tmp_
     assert open_positions[0].direction == Direction.LONG
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_fast_loop_does_not_fire_below_threshold(tmp_path):
     """Long-liq window below threshold → no snapshot fetch, no alert, no position."""
     cfg = _liq_cfg(threshold=10_000_000.0)
@@ -130,7 +130,7 @@ async def test_fast_loop_does_not_fire_below_threshold(tmp_path):
     assert bot.state.open_positions() == []
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_fast_loop_skips_build_snapshot_when_cooldown_active(tmp_path):
     """Crossed threshold but cooldown ticking → no REST roundtrip until cooldown expires."""
     cfg = _liq_cfg(threshold=1_000_000.0)
@@ -153,7 +153,7 @@ async def test_fast_loop_skips_build_snapshot_when_cooldown_active(tmp_path):
     bot.notifier.send.assert_not_awaited()
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_fast_loop_disabled_when_liq_cascade_disabled(tmp_path):
     """Globally disabling liq_cascade in config disables the fast path."""
     cfg = _liq_cfg(threshold=1_000_000.0)
@@ -174,7 +174,7 @@ async def test_fast_loop_disabled_when_liq_cascade_disabled(tmp_path):
 # ─── Concurrency / lock behavior ────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_entry_lock_prevents_double_fire_on_concurrent_handle_calls(tmp_path):
     """Two coroutines (poll-loop + fast-loop) calling `_handle_entry_signals`
     concurrently on the same (symbol, direction) must result in exactly one
