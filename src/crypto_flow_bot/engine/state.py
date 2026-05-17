@@ -21,6 +21,29 @@ from crypto_flow_bot.engine.signals import SignalCandidate
 log = logging.getLogger(__name__)
 
 
+_REASON_METRIC_KEYS: tuple[str, ...] = (
+    "funding_rate",
+    "funding_rate_zscore",
+    "funding_rate_percentile",
+    "predicted_funding_rate",
+    "predicted_funding_zscore",
+    "predicted_funding_percentile",
+    "long_short_ratio",
+    "open_interest_change_pct_window",
+    "taker_buy_dominance_1h",
+    "cvd_window_usd",
+    "ema50_slope_1h",
+    "ema50_slope_4h",
+    "regime",
+    "adx_1h",
+    "atr_pct_1h",
+)
+
+
+def _reason_metric_whitelist(snap: Snapshot) -> dict[str, float | str | None]:
+    return {k: getattr(snap, k, None) for k in _REASON_METRIC_KEYS}
+
+
 def _state_dir() -> Path:
     return Path(os.environ.get("CRYPTO_FLOW_BOT_STATE_DIR", "state"))
 
@@ -238,13 +261,7 @@ class StateStore:
         else:
             sl_price = snap.price * (1 - sign * cfg.exits.stop_loss_pct)
             tp_levels = [TpLevelState(pct=lvl.pct, fraction=lvl.fraction) for lvl in cfg.exits.take_profit_levels]
-        metric_snap: dict = {}
-        if snap.funding_rate is not None:
-            metric_snap["funding_rate"] = snap.funding_rate
-        if snap.long_short_ratio is not None:
-            metric_snap["long_short_ratio"] = snap.long_short_ratio
-        if snap.open_interest_change_pct_window is not None:
-            metric_snap["oi_change_pct"] = snap.open_interest_change_pct_window
+        metric_snap = _reason_metric_whitelist(snap)
         position = Position(
             id=str(uuid.uuid4())[:8],
             symbol=candidate.symbol,

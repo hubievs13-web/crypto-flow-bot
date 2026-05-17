@@ -1,7 +1,7 @@
 from datetime import UTC, datetime, timedelta
 
 from crypto_flow_bot.config import Config
-from crypto_flow_bot.engine.exits import evaluate_exit
+from crypto_flow_bot.engine.exits import _entry_metric_float, evaluate_exit
 from crypto_flow_bot.engine.models import Direction, Position, Snapshot, TpLevelState
 
 
@@ -171,6 +171,27 @@ def test_funding_reason_no_invalidation_without_entry_metric():
     )
     events = evaluate_exit(pos, snap, cfg)
     assert not any(e.kind == "REASON_INVALIDATED" for e in events)
+
+
+def test_reason_invalidation_handles_mixed_metric_types_with_regime_present():
+    cfg = _cfg()
+    pos = _short_position(
+        entry=100.0,
+        reason="funding_extreme",
+        metrics_at_entry={"funding_rate": 0.0001, "regime": "trend"},
+    )
+    snap = Snapshot(symbol="BTCUSDT", ts=datetime.now(tz=UTC), price=99.9, funding_rate=0.00004)
+    events = evaluate_exit(pos, snap, cfg)
+    assert any(e.kind == "REASON_INVALIDATED" for e in events)
+
+
+def test_entry_metric_float_returns_none_for_legacy_string_metric():
+    pos = _short_position(
+        entry=100.0,
+        reason="funding_extreme",
+        metrics_at_entry={"funding_rate": "0.0001", "regime": "trend"},
+    )
+    assert _entry_metric_float(pos, "funding_rate") is None
 
 
 def test_predicted_funding_only_position_does_not_trigger_funding_retrace():

@@ -8,6 +8,24 @@ from crypto_flow_bot.engine.models import Direction, Snapshot
 from crypto_flow_bot.engine.signals import FiredRule, SignalCandidate
 from crypto_flow_bot.engine.state import StateStore
 
+_REASON_METRIC_KEYS = {
+    "funding_rate",
+    "funding_rate_zscore",
+    "funding_rate_percentile",
+    "predicted_funding_rate",
+    "predicted_funding_zscore",
+    "predicted_funding_percentile",
+    "long_short_ratio",
+    "open_interest_change_pct_window",
+    "taker_buy_dominance_1h",
+    "cvd_window_usd",
+    "ema50_slope_1h",
+    "ema50_slope_4h",
+    "regime",
+    "adx_1h",
+    "atr_pct_1h",
+}
+
 
 def _cfg() -> Config:
     return Config(symbols=["BTCUSDT"])
@@ -103,6 +121,72 @@ def test_open_from_signal_populates_reason_rules(tmp_path):
 
     assert pos.reason == "funding_extreme+lsr_extreme"
     assert pos.reason_rules == ["funding_extreme", "lsr_extreme"]
+
+
+def test_open_from_signal_reason_metric_at_entry_is_strict_whitelist(tmp_path):
+    store = StateStore(path=tmp_path)
+    snap = Snapshot(
+        symbol="BTCUSDT",
+        ts=datetime.now(tz=UTC),
+        price=100.0,
+        funding_rate=0.01,
+        funding_rate_zscore=2.0,
+        funding_rate_percentile=0.9,
+        predicted_funding_rate=0.02,
+        predicted_funding_zscore=1.5,
+        predicted_funding_percentile=0.8,
+        long_short_ratio=0.6,
+        open_interest_change_pct_window=3.0,
+        taker_buy_dominance_1h=0.7,
+        cvd_window_usd=123.0,
+        ema50_slope_1h=0.001,
+        ema50_slope_4h=0.002,
+        regime="trend",
+        adx_1h=25.0,
+        atr_pct_1h=0.03,
+        open_interest_usd=999.0,
+        price_change_pct_1h=0.05,
+    )
+    cand = SignalCandidate(
+        symbol="BTCUSDT",
+        direction=Direction.LONG,
+        fired_rules=[FiredRule(name="lsr_extreme", description="x")],
+        snapshot=snap,
+    )
+    pos = store.open_from_signal(cand, _cfg())
+    assert set(pos.reason_metric_at_entry.keys()) == _REASON_METRIC_KEYS
+    assert "open_interest_usd" not in pos.reason_metric_at_entry
+    assert "price_change_pct_1h" not in pos.reason_metric_at_entry
+
+
+def test_open_from_signal_reason_metric_at_entry_missing_metrics_are_none(tmp_path):
+    store = StateStore(path=tmp_path)
+    pos = store.open_from_signal(_candidate(["lsr_extreme"]), _cfg())
+    assert set(pos.reason_metric_at_entry.keys()) == _REASON_METRIC_KEYS
+    assert pos.reason_metric_at_entry["funding_rate"] is None
+    assert pos.reason_metric_at_entry["regime"] is None
+
+
+def test_state_load_back_compat_reason_metric_extra_keys_unchanged(tmp_path):
+    (tmp_path / "state.json").write_text(json.dumps({
+        "positions": [{
+            "id": "legacy-extra",
+            "symbol": "BTCUSDT",
+            "direction": "LONG",
+            "entry_price": 100.0,
+            "entry_ts": "2026-05-01T12:00:00+00:00",
+            "reason": "lsr_extreme",
+            "reason_rules": ["lsr_extreme"],
+            "reason_metric_at_entry": {"funding_rate": 0.1, "legacy_extra": 123},
+            "stop_loss_price": 99.0,
+            "initial_stop_loss_price": 99.0,
+            "tp_levels": [],
+            "open_fraction": 1.0,
+            "closed": False,
+        }],
+    }))
+    store = StateStore(path=tmp_path)
+    assert store.positions["legacy-extra"].reason_metric_at_entry["legacy_extra"] == 123
 
 
 def test_state_load_back_compat_derives_reason_rules_from_legacy_reason(tmp_path):
