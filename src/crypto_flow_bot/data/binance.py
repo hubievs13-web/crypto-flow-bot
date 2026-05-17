@@ -393,6 +393,7 @@ async def build_snapshot(
     predicted_funding_cap: float = 0.0075,
     predicted_funding_interest_clamp_abs: float = 0.0005,
     regime_enabled: bool = True,
+    regime_timeframe: str = "1h",
     regime_adx_period: int = 14,
     regime_cfg=None,
     ema_period: int = 50,
@@ -430,6 +431,9 @@ async def build_snapshot(
     klines_4h_limit = ema_period + slope_window_bars_4h + 5
     klines_1h = await client.klines(symbol, timeframe_short, limit=short_klines_limit)
     klines_1h_ts = datetime.now(tz=UTC)
+    klines_regime = klines_1h
+    if regime_timeframe != timeframe_short:
+        klines_regime = await client.klines(symbol, regime_timeframe, limit=short_klines_limit)
     premium_idx = await client.premium_index(symbol)
     # 4h is fetched separately so the typed unpacking above stays stable
     # regardless of whether the higher-TF block is enabled.
@@ -492,9 +496,9 @@ async def build_snapshot(
     adx_1h = None
     atr_pct_1h = None
     regime = None
-    if regime_enabled and klines_1h and len(klines_1h) >= 30 and atr_1h is not None and price > 0:
+    if regime_enabled and klines_regime and len(klines_regime) >= 30 and atr_1h is not None and price > 0:
         atr_pct_1h = atr_1h / price
-        adx_1h = compute_adx(klines_1h, period=regime_adx_period)
+        adx_1h = compute_adx(klines_regime, period=regime_adx_period)
         if regime_cfg is not None:
             regime = classify_regime(adx_1h, atr_pct_1h, regime_cfg)
 
