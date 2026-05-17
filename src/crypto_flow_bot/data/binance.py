@@ -367,6 +367,7 @@ async def build_snapshot(
     symbol: str,
     oi_window_minutes: int,
     slope_window_bars: int = 6,
+    slope_window_bars_4h: int = 6,
     cvd_window_bars: int = 6,
     oi_quality_epsilon_pct: float = 0.0005,
     timeframe_short: str = "1h",
@@ -399,11 +400,12 @@ async def build_snapshot(
     oi_hist = await client.open_interest_history(
         symbol, period="5m", limit=_oi_history_limit(oi_window_minutes)
     )
-    # PR fix P0-5: limit must be >= ema_period + slope_window_bars + 1 in-progress
-    # bar so that _kline_derivatives can compute the EMA slope. Default 51 only
-    # produced 50 closed bars -> EMA50 series of length 1 -> slope was always None.
-    klines_limit = ema_period + slope_window_bars + 5
-    klines_1h = await client.klines(symbol, timeframe_short, limit=klines_limit)
+        # PR fix P0-5: limits must be >= ema_period + slope_window_bars + 1 in-progress
+    # bar so that _kline_derivatives can compute EMA slopes. Keep short-timeframe
+    # and 4h limits separate because their slope windows may differ.
+    short_klines_limit = ema_period + slope_window_bars + 5
+    klines_4h_limit = ema_period + slope_window_bars_4h + 5
+    klines_1h = await client.klines(symbol, timeframe_short, limit=short_klines_limit)
     klines_1h_ts = datetime.now(tz=UTC)
     premium_idx = await client.premium_index(symbol)
     # 4h is fetched separately so the typed unpacking above stays stable
@@ -411,7 +413,7 @@ async def build_snapshot(
     klines_4h: list[list] | None = None
     klines_4h_ts: datetime | None = None
     if enable_4h_klines:
-        klines_4h = await client.klines(symbol, "4h", limit=klines_limit)
+        klines_4h = await client.klines(symbol, "4h", limit=klines_4h_limit)
         klines_4h_ts = datetime.now(tz=UTC)
 
     oi_change_pct: float | None = None
@@ -437,7 +439,7 @@ async def build_snapshot(
     ema50_slope_4h: float | None = None
     if klines_4h is not None:
         price_change_pct_4h, ema50_4h, atr_4h, ema50_slope_4h = _kline_derivatives(
-            klines_4h, slope_window_bars=slope_window_bars
+            klines_4h, slope_window_bars=slope_window_bars_4h
         )
 
     long_liq, short_liq = liq_stream.totals(symbol)

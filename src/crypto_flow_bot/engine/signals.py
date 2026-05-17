@@ -594,7 +594,7 @@ def evaluate(
                     cand.entry_downgrades.append(
                         FiredRule(
                             name="slope_4h",
-                            description=f"slope_4h n/a ({s4 * 100:+.2f}%/{tf.slope_window_bars * 4}h)",
+                            description=f"slope_4h n/a ({s4 * 100:+.2f}%/{tf.slope_window_bars_4h * 4}h)",
                         )
                     )
                     if tf.hard_block_on_slope:
