@@ -236,6 +236,7 @@ def _kline_derivatives(
     *,
     slope_window_bars: int = 6,
     atr_period: int = 14,
+    ema_period: int = 50,
 ) -> tuple[float | None, float | None, float | None, float | None]:
     """Compute (price_change_pct, ema50, atr14) from a list of OHLCV bars.
 
@@ -255,8 +256,8 @@ def _kline_derivatives(
             closes = [float(b[4]) for b in closed]
             if len(closes) >= 2 and closes[-2] > 0:
                 price_change_pct = (closes[-1] - closes[-2]) / closes[-2]
-            ema50 = compute_ema(closes, period=50)
-            series = _ema_series(closes, period=50)
+            ema50 = compute_ema(closes, period=ema_period)
+            series = _ema_series(closes, period=ema_period)
             lookback_idx = slope_window_bars
             if len(series) >= lookback_idx + 1 and series[-1 - lookback_idx] != 0:
                 ema_slope = (series[-1] - series[-1 - lookback_idx]) / series[-1 - lookback_idx]
@@ -448,7 +449,7 @@ async def build_snapshot(
             oi_change_pct = None
 
     price_change_pct_1h, ema50_1h, atr_1h, ema50_slope_1h = _kline_derivatives(
-        klines_1h, slope_window_bars=slope_window_bars, atr_period=atr_period
+        klines_1h, slope_window_bars=slope_window_bars, atr_period=atr_period, ema_period=ema_period
     )
     taker_buy_1h, taker_sell_1h = _taker_quote_volumes(klines_1h)
     taker_buy_dominance_1h = _taker_buy_dominance(taker_buy_1h, taker_sell_1h)
@@ -461,7 +462,7 @@ async def build_snapshot(
     ema50_slope_4h: float | None = None
     if klines_4h is not None:
         price_change_pct_4h, ema50_4h, atr_4h, ema50_slope_4h = _kline_derivatives(
-            klines_4h, slope_window_bars=slope_window_bars_4h, atr_period=atr_period
+            klines_4h, slope_window_bars=slope_window_bars_4h, atr_period=atr_period, ema_period=ema_period
         )
 
     long_liq, short_liq = liq_stream.totals(symbol)
