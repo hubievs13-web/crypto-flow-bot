@@ -1,5 +1,6 @@
 """Tests for state persistence and post-exit cooldown bookkeeping."""
 
+import json
 from datetime import UTC, datetime, timedelta
 
 from crypto_flow_bot.config import Config
@@ -94,6 +95,45 @@ def test_signal_id_and_entry_atr_round_trip(tmp_path):
     reloaded = next(iter(fresh.positions.values()))
     assert reloaded.signal_id == "abcd1234"
     assert reloaded.entry_atr_1h == 1.23
+
+def test_open_from_signal_populates_reason_rules(tmp_path):
+    """fired_rules order is preserved on reason_rules."""
+    store = StateStore(path=tmp_path)
+    pos = store.open_from_signal(_candidate(["funding_extreme", "lsr_extreme"]), _cfg())
+
+    assert pos.reason == "funding_extreme+lsr_extreme"
+    assert pos.reason_rules == ["funding_extreme", "lsr_extreme"]
+
+
+def test_state_load_back_compat_derives_reason_rules_from_legacy_reason(tmp_path):
+    """Old state.json without `reason_rules` -> derive from `reason`."""
+    def position(position_id: str, reason: str) -> dict:
+        return {
+            "id": position_id,
+            "symbol": "BTCUSDT",
+            "direction": "LONG",
+            "entry_price": 100.0,
+            "entry_ts": "2026-05-01T12:00:00+00:00",
+            "reason": reason,
+            "reason_metric_at_entry": {},
+            "stop_loss_price": 99.0,
+            "initial_stop_loss_price": 99.0,
+            "tp_levels": [],
+            "open_fraction": 1.0,
+            "closed": False,
+        }
+
+    (tmp_path / "state.json").write_text(json.dumps({
+        "positions": [
+            position("legacy-rules", "funding_extreme+oi_surge"),
+            position("legacy-empty", ""),
+        ],
+    }))
+
+    store = StateStore(path=tmp_path)
+
+    assert store.positions["legacy-rules"].reason_rules == ["funding_extreme", "oi_surge"]
+    assert store.positions["legacy-empty"].reason_rules == []
 
 
 # ─── Post-exit cooldown ────────────────────────────────────────────────────

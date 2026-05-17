@@ -142,6 +142,7 @@ class Position:
     entry_ts: datetime
     reason: str  # which signal opened it
     reason_metric_at_entry: dict = field(default_factory=dict)
+    reason_rules: list[str] = field(default_factory=list)
 
     # Risk levels — absolute prices, computed at entry.
     stop_loss_price: float = 0.0  # current effective SL (may move with trailing)
@@ -183,6 +184,7 @@ class Position:
             "entry_price": self.entry_price,
             "entry_ts": self.entry_ts.isoformat(),
             "reason": self.reason,
+            "reason_rules": list(self.reason_rules),
             "reason_metric_at_entry": self.reason_metric_at_entry,
             "stop_loss_price": self.stop_loss_price,
             "initial_stop_loss_price": self.initial_stop_loss_price,

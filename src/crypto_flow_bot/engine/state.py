@@ -60,6 +60,12 @@ class StateStore:
             return
         for p in raw.get("positions", []):
             try:
+                legacy_reason = str(p.get("reason", ""))
+                reason_rules = p.get("reason_rules")
+                if not isinstance(reason_rules, list):
+                    reason_rules = [x for x in legacy_reason.split("+") if x]
+                else:
+                    reason_rules = [str(x) for x in reason_rules]
                 pos = Position(
                     id=p["id"],
                     symbol=p["symbol"],
@@ -67,6 +73,7 @@ class StateStore:
                     entry_price=float(p["entry_price"]),
                     entry_ts=datetime.fromisoformat(p["entry_ts"]),
                     reason=p["reason"],
+                    reason_rules=reason_rules,
                     reason_metric_at_entry=p.get("reason_metric_at_entry", {}),
                     stop_loss_price=float(p["stop_loss_price"]),
                     initial_stop_loss_price=float(p["initial_stop_loss_price"]),
@@ -245,6 +252,7 @@ class StateStore:
             entry_price=snap.price,
             entry_ts=datetime.now(tz=UTC),
             reason=candidate.reason_label,
+            reason_rules=[r.name for r in candidate.fired_rules],
             reason_metric_at_entry=metric_snap,
             stop_loss_price=sl_price,
             initial_stop_loss_price=sl_price,

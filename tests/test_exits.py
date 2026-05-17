@@ -24,6 +24,7 @@ def _long_position(
         entry_price=entry,
         entry_ts=datetime.now(tz=UTC) - timedelta(minutes=age_minutes),
         reason=reason,
+        reason_rules=[x for x in reason.split("+") if x],
         reason_metric_at_entry=metrics_at_entry or {},
         stop_loss_price=sl,
         initial_stop_loss_price=sl,
@@ -46,6 +47,7 @@ def _short_position(
         entry_price=entry,
         entry_ts=datetime.now(tz=UTC) - timedelta(minutes=age_minutes),
         reason=reason,
+        reason_rules=[x for x in reason.split("+") if x],
         reason_metric_at_entry=metrics_at_entry or {},
         stop_loss_price=sl,
         initial_stop_loss_price=sl,
@@ -169,6 +171,41 @@ def test_funding_reason_no_invalidation_without_entry_metric():
     )
     events = evaluate_exit(pos, snap, cfg)
     assert not any(e.kind == "REASON_INVALIDATED" for e in events)
+
+
+def test_predicted_funding_only_position_does_not_trigger_funding_retrace():
+    """Substring 'funding_extreme' in 'predicted_funding_extreme'
+    used to falsely fire the realized-funding retrace gate. After P0-3
+    the gate keys off reason_rules exactly."""
+    cfg = _cfg()
+    pos = _short_position(
+        entry=100.0,
+        reason="predicted_funding_extreme",
+        metrics_at_entry={"funding_rate": 0.0001},
+    )
+    assert pos.reason_rules == ["predicted_funding_extreme"]
+    assert "funding_extreme" not in pos.reason_rules
+    snap = Snapshot(
+        symbol="BTCUSDT", ts=datetime.now(tz=UTC), price=99.9, funding_rate=0.00004
+    )
+    events = evaluate_exit(pos, snap, cfg)
+    assert not any(e.kind == "REASON_INVALIDATED" for e in events)
+
+
+def test_funding_extreme_exact_match_still_triggers():
+    """Sanity: the exact rule still triggers the retrace gate."""
+    cfg = _cfg()
+    pos = _short_position(
+        entry=100.0,
+        reason="funding_extreme",
+        metrics_at_entry={"funding_rate": 0.0001},
+    )
+    assert pos.reason_rules == ["funding_extreme"]
+    snap = Snapshot(
+        symbol="BTCUSDT", ts=datetime.now(tz=UTC), price=99.9, funding_rate=0.00004
+    )
+    events = evaluate_exit(pos, snap, cfg)
+    assert any(e.kind == "REASON_INVALIDATED" for e in events)
 
 
 def test_lsr_reason_invalidation_on_retracement():
