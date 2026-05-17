@@ -47,7 +47,7 @@ def _bot(tmp_path, cfg: Config) -> Bot:
     return bot
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_max_concurrent_positions_blocks_third_entry(tmp_path):
     cfg = Config(
         symbols=["BTCUSDT", "ETHUSDT", "SOLUSDT"],
@@ -67,7 +67,7 @@ async def test_max_concurrent_positions_blocks_third_entry(tmp_path):
     assert "max_concurrent" in reasons
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_max_per_direction_applies_only_within_correlated_group(tmp_path):
     """max_per_direction=1 inside [BTCUSDT, ETHUSDT] must block a second
     same-side entry between BTC and ETH, but must NOT block SOLUSDT (which
@@ -90,7 +90,7 @@ async def test_max_per_direction_applies_only_within_correlated_group(tmp_path):
     assert all(p.direction == Direction.SHORT for p in open_positions)
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_max_per_direction_without_groups_has_no_effect(tmp_path):
     """max_per_direction with an empty correlated_groups list must NOT
     behave like the old global cap — it applies per group, and no group
@@ -110,7 +110,7 @@ async def test_max_per_direction_without_groups_has_no_effect(tmp_path):
     assert len(bot.state.open_positions()) == 3
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_post_exit_cooldown_blocks_reentry(tmp_path):
     """After a position closes on a (symbol, direction), the same side must
     not reopen for `post_exit_cooldown_seconds`."""
@@ -139,7 +139,7 @@ async def test_post_exit_cooldown_blocks_reentry(tmp_path):
     assert "post_exit_cooldown" in reasons
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_post_exit_cooldown_zero_disables_gate(tmp_path):
     """With cooldown=0, an immediate re-entry on a fresh signal is allowed."""
     cfg = Config(
@@ -165,7 +165,7 @@ async def test_post_exit_cooldown_zero_disables_gate(tmp_path):
     assert len(bot.state.open_positions()) == 1
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_handle_exit_event_does_not_modify_legacy_loss_counter(tmp_path):
     """Sanity: the entry path no longer reads/writes any daily-loss counter
     (the gate was deleted). Exit events should just close the position and
@@ -190,7 +190,7 @@ async def test_handle_exit_event_does_not_modify_legacy_loss_counter(tmp_path):
     assert ("BTCUSDT", Direction.LONG) in bot.state.last_close_ts
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_conflict_policy_skips_when_long_and_short_both_fire(tmp_path):
     """A snapshot that fires *both* a LONG and a SHORT rule must be skipped
     entirely instead of arbitrarily opening LONG first (and then blocking the
@@ -226,7 +226,7 @@ async def test_conflict_policy_skips_when_long_and_short_both_fire(tmp_path):
     assert reasons == ["conflicting_signals", "conflicting_signals"]
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_conflict_policy_does_not_block_single_direction(tmp_path):
     """Sanity: when only one direction fires (even with multiple rules), the
     conflict policy must NOT skip — strong confluence in one direction is the
