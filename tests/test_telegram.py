@@ -120,6 +120,88 @@ def test_format_entry_alert_omits_strong_for_single_rule(tmp_path, monkeypatch):
     assert "STRONG" not in alert.text
 
 
+def test_entry_alert_trailing_activation_uses_atr_based_pct_when_available():
+    cfg = Config(symbols=["BTCUSDT"], notifier=NotifierCfg(), signals=SignalsCfg())
+    cfg.exits.trailing.activate_at_atr_mult = 1.5
+    cfg.exits.trailing.activate_at_pct = 0.02
+    snap = Snapshot(symbol="BTCUSDT", ts=datetime.now(tz=UTC), price=100.0)
+    cand = SignalCandidate(
+        symbol="BTCUSDT",
+        direction=Direction.LONG,
+        fired_rules=[FiredRule(name="lsr_extreme", description="L/S 0.55")],
+        snapshot=snap,
+        confluence_window_rules={"lsr_extreme"},
+    )
+    pos = Position(
+        id="xatr",
+        symbol="BTCUSDT",
+        direction=Direction.LONG,
+        entry_price=100.0,
+        entry_ts=datetime.now(tz=UTC),
+        reason="lsr_extreme",
+        stop_loss_price=99.0,
+        initial_stop_loss_price=99.0,
+        entry_atr_1h=2.0,
+    )
+    alert = format_entry_alert(cand, pos, cfg)
+    assert "Trailing: after 3.00%" in alert.text
+    assert "SL:" in alert.text and "Time stop:" in alert.text
+
+
+def test_entry_alert_trailing_activation_falls_back_without_entry_atr():
+    cfg = Config(symbols=["BTCUSDT"], notifier=NotifierCfg(), signals=SignalsCfg())
+    cfg.exits.trailing.activate_at_atr_mult = 1.5
+    cfg.exits.trailing.activate_at_pct = 0.02
+    snap = Snapshot(symbol="BTCUSDT", ts=datetime.now(tz=UTC), price=100.0)
+    cand = SignalCandidate(
+        symbol="BTCUSDT",
+        direction=Direction.LONG,
+        fired_rules=[FiredRule(name="lsr_extreme", description="L/S 0.55")],
+        snapshot=snap,
+        confluence_window_rules={"lsr_extreme"},
+    )
+    pos = Position(
+        id="xfallback",
+        symbol="BTCUSDT",
+        direction=Direction.LONG,
+        entry_price=100.0,
+        entry_ts=datetime.now(tz=UTC),
+        reason="lsr_extreme",
+        stop_loss_price=99.0,
+        initial_stop_loss_price=99.0,
+        entry_atr_1h=None,
+    )
+    alert = format_entry_alert(cand, pos, cfg)
+    assert "Trailing: after 2.00%" in alert.text
+
+
+def test_entry_alert_trailing_activation_falls_back_when_entry_price_invalid():
+    cfg = Config(symbols=["BTCUSDT"], notifier=NotifierCfg(), signals=SignalsCfg())
+    cfg.exits.trailing.activate_at_atr_mult = 1.5
+    cfg.exits.trailing.activate_at_pct = 0.02
+    snap = Snapshot(symbol="BTCUSDT", ts=datetime.now(tz=UTC), price=100.0)
+    cand = SignalCandidate(
+        symbol="BTCUSDT",
+        direction=Direction.LONG,
+        fired_rules=[FiredRule(name="lsr_extreme", description="L/S 0.55")],
+        snapshot=snap,
+        confluence_window_rules={"lsr_extreme"},
+    )
+    pos = Position(
+        id="xprice0",
+        symbol="BTCUSDT",
+        direction=Direction.LONG,
+        entry_price=0.0,
+        entry_ts=datetime.now(tz=UTC),
+        reason="lsr_extreme",
+        stop_loss_price=0.0,
+        initial_stop_loss_price=0.0,
+        entry_atr_1h=2.0,
+    )
+    alert = format_entry_alert(cand, pos, cfg)
+    assert "Trailing: after 2.00%" in alert.text
+
+
 def test_entry_alert_renders_downgrades_section():
     cfg = Config(symbols=["BTCUSDT"], notifier=NotifierCfg(), signals=SignalsCfg())
     snap = Snapshot(symbol="BTCUSDT", ts=datetime.now(tz=UTC), price=100.0)
