@@ -284,3 +284,39 @@ async def test_funding_rate_history_skips_malformed_rows():
 
     assert len(out) == 2
     assert [rate for _ts, rate in out] == [0.0001, 0.0003]
+
+
+@pytest.mark.asyncio
+async def test_top_long_short_position_ratio_handles_empty_list():
+    from crypto_flow_bot.data.binance import BinanceClient
+
+    client = BinanceClient()
+    client._get = AsyncMock(return_value=[])  # type: ignore[method-assign]
+    assert await client.top_long_short_position_ratio("BTCUSDT") is None
+
+
+@pytest.mark.asyncio
+async def test_top_long_short_position_ratio_handles_missing_key():
+    from crypto_flow_bot.data.binance import BinanceClient
+
+    client = BinanceClient()
+    client._get = AsyncMock(return_value=[{}])  # type: ignore[method-assign]
+    assert await client.top_long_short_position_ratio("BTCUSDT") is None
+
+
+@pytest.mark.asyncio
+async def test_top_long_short_position_ratio_handles_invalid_ratio_value():
+    from crypto_flow_bot.data.binance import BinanceClient
+
+    client = BinanceClient()
+    client._get = AsyncMock(return_value=[{"longShortRatio": "not-a-number"}])  # type: ignore[method-assign]
+    assert await client.top_long_short_position_ratio("BTCUSDT") is None
+
+
+@pytest.mark.asyncio
+async def test_top_long_short_position_ratio_parses_valid_value():
+    from crypto_flow_bot.data.binance import BinanceClient
+
+    client = BinanceClient()
+    client._get = AsyncMock(return_value=[{"longShortRatio": "1.234"}])  # type: ignore[method-assign]
+    assert await client.top_long_short_position_ratio("BTCUSDT") == 1.234
