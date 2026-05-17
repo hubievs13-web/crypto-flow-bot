@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import re
+from typing import Any
 
 import httpx
 
@@ -12,6 +14,13 @@ from crypto_flow_bot.engine.models import Alert, Direction, Position, utcnow
 from crypto_flow_bot.engine.signals import SignalCandidate
 
 log = logging.getLogger(__name__)
+
+def _mask_telegram_token(value: Any) -> str:
+    """Mask Telegram bot tokens in URL-like strings for safe logging."""
+    if value is None:
+        return ""
+    masked = str(value)
+    return re.sub(r"/bot[^/]+/", "/bot***/", masked)
 
 
 class TelegramNotifier:
@@ -36,11 +45,12 @@ class TelegramNotifier:
                 "disable_web_page_preview": True,
             }
             try:
+                log.debug("telegram send request: %s", _mask_telegram_token(url))
                 r = await self._http.post(url, json=payload)
                 if r.status_code != 200:
                     log.warning("telegram send to %s failed: %s %s", chat_id, r.status_code, r.text)
             except (TimeoutError, httpx.HTTPError) as e:
-                log.warning("telegram send to %s errored: %s", chat_id, e)
+                log.warning("telegram send to %s errored: %s", chat_id, _mask_telegram_token(e))
 
     async def send_to(self, chat_id: str, text: str) -> None:
         """Send a message to a specific chat (used for /start replies)."""
@@ -52,11 +62,12 @@ class TelegramNotifier:
             "disable_web_page_preview": True,
         }
         try:
+            log.debug("telegram send_to request: %s", _mask_telegram_token(url))
             r = await self._http.post(url, json=payload)
             if r.status_code != 200:
                 log.warning("telegram send_to %s failed: %s %s", chat_id, r.status_code, r.text)
         except (TimeoutError, httpx.HTTPError) as e:
-            log.warning("telegram send_to %s errored: %s", chat_id, e)
+            log.warning("telegram send_to %s errored: %s", chat_id, _mask_telegram_token(e))
 
     async def clear_pending_updates(self) -> None:
         """Drop any /start messages queued up before the bot started.
@@ -65,12 +76,13 @@ class TelegramNotifier:
         """
         url = f"https://api.telegram.org/bot{self.token}/getUpdates"
         try:
+            log.debug("telegram clear_pending_updates request: %s", _mask_telegram_token(url))
             r = await self._http.get(url, params={"timeout": 0}, timeout=10.0)
             if r.status_code != 200:
                 return
             results = r.json().get("result", [])
         except (TimeoutError, httpx.HTTPError) as e:
-            log.debug("clear_pending_updates errored: %s", e)
+            log.debug("clear_pending_updates errored: %s", _mask_telegram_token(e))
             return
         if results:
             self._update_offset = results[-1]["update_id"] + 1
@@ -83,13 +95,14 @@ class TelegramNotifier:
         if self._update_offset:
             params["offset"] = self._update_offset
         try:
+            log.debug("telegram poll_commands request: %s", _mask_telegram_token(url))
             r = await self._http.get(url, params=params, timeout=15.0)
             if r.status_code != 200:
                 log.debug("getUpdates returned %s", r.status_code)
                 return
             data = r.json()
         except (TimeoutError, httpx.HTTPError) as e:
-            log.debug("getUpdates errored: %s", e)
+            log.debug("getUpdates errored: %s", _mask_telegram_token(e))
             return
 
         for update in data.get("result", []):
