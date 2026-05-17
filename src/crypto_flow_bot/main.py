@@ -206,6 +206,7 @@ class Bot:
                         regime_adx_period=sig.regime.adx_period,
                         regime_cfg=sig.regime,
                         ema_period=sig.trend_filter.ema_period,
+                        atr_period=sig.trend_filter.atr_period,
                     )
                 except Exception as e:
                     log.warning("snapshot for %s failed: %s", symbol, e)
@@ -284,6 +285,7 @@ class Bot:
                         regime_enabled=sig.regime.enabled,
                         regime_adx_period=sig.regime.adx_period,
                         ema_period=sig.trend_filter.ema_period,
+                        atr_period=sig.trend_filter.atr_period,
                         regime_cfg=sig.regime,
                     )
                 except Exception as e:

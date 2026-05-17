@@ -235,6 +235,7 @@ def _kline_derivatives(
     klines: list[list],
     *,
     slope_window_bars: int = 6,
+    atr_period: int = 14,
 ) -> tuple[float | None, float | None, float | None, float | None]:
     """Compute (price_change_pct, ema50, atr14) from a list of OHLCV bars.
 
@@ -259,7 +260,7 @@ def _kline_derivatives(
             lookback_idx = slope_window_bars
             if len(series) >= lookback_idx + 1 and series[-1 - lookback_idx] != 0:
                 ema_slope = (series[-1] - series[-1 - lookback_idx]) / series[-1 - lookback_idx]
-            atr14 = compute_atr(highs, lows, closes, period=14)
+            atr14 = compute_atr(highs, lows, closes, period=atr_period)
         except (IndexError, ValueError):
             pass
     return price_change_pct, ema50, atr14, ema_slope
@@ -361,8 +362,19 @@ def _oi_history_limit(window_minutes: int) -> int:
     return max(2, math.ceil(window_minutes / 5) + 1)
 
 
-def _short_klines_limit(*, ema_period: int, slope_window_bars: int, cvd_window_bars: int, buffer_bars: int = 5) -> int:
-    return max(ema_period + slope_window_bars + buffer_bars, cvd_window_bars + buffer_bars)
+def _short_klines_limit(
+    *,
+    ema_period: int,
+    slope_window_bars: int,
+    atr_period: int,
+    cvd_window_bars: int,
+    buffer_bars: int = 5,
+) -> int:
+    return max(
+        ema_period + slope_window_bars + buffer_bars,
+        atr_period + buffer_bars,
+        cvd_window_bars + buffer_bars,
+    )
 
 
 async def build_snapshot(
@@ -383,6 +395,7 @@ async def build_snapshot(
     regime_adx_period: int = 14,
     regime_cfg=None,
     ema_period: int = 50,
+    atr_period: int = 14,
     funding_cycle_hours: int = 8,
 ) -> Snapshot:
     """Pull a fresh snapshot for a symbol.
@@ -408,7 +421,10 @@ async def build_snapshot(
     # bar so that _kline_derivatives can compute EMA slopes. Keep short-timeframe
     # and 4h limits separate because their slope windows may differ.
     short_klines_limit = _short_klines_limit(
-        ema_period=ema_period, slope_window_bars=slope_window_bars, cvd_window_bars=cvd_window_bars
+        ema_period=ema_period,
+        slope_window_bars=slope_window_bars,
+        atr_period=atr_period,
+        cvd_window_bars=cvd_window_bars
     )
     klines_4h_limit = ema_period + slope_window_bars_4h + 5
     klines_1h = await client.klines(symbol, timeframe_short, limit=short_klines_limit)
@@ -432,7 +448,7 @@ async def build_snapshot(
             oi_change_pct = None
 
     price_change_pct_1h, ema50_1h, atr_1h, ema50_slope_1h = _kline_derivatives(
-        klines_1h, slope_window_bars=slope_window_bars
+        klines_1h, slope_window_bars=slope_window_bars, atr_period=atr_period
     )
     taker_buy_1h, taker_sell_1h = _taker_quote_volumes(klines_1h)
     taker_buy_dominance_1h = _taker_buy_dominance(taker_buy_1h, taker_sell_1h)
@@ -445,7 +461,7 @@ async def build_snapshot(
     ema50_slope_4h: float | None = None
     if klines_4h is not None:
         price_change_pct_4h, ema50_4h, atr_4h, ema50_slope_4h = _kline_derivatives(
-            klines_4h, slope_window_bars=slope_window_bars_4h
+            klines_4h, slope_window_bars=slope_window_bars_4h, atr_period=atr_period
         )
 
     long_liq, short_liq = liq_stream.totals(symbol)

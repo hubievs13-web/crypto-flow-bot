@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from crypto_flow_bot.config import Config, SignalsCfg, TakerConfirmationCfg
+from crypto_flow_bot.config import Config, SignalsCfg, TakerConfirmationCfg, TrendFilterCfg
 
 
 def test_signals_timeframe_short_default_is_1h() -> None:
@@ -30,3 +30,13 @@ def test_taker_confirmation_default_cvd_window_bars_is_6() -> None:
 def test_taker_confirmation_cvd_window_bars_rejects_non_positive() -> None:
     with pytest.raises(ValidationError):
         SignalsCfg(taker_confirmation=TakerConfirmationCfg(cvd_window_bars=0))
+
+
+def test_trend_filter_default_atr_period_is_14() -> None:
+    cfg = Config(symbols=["BTCUSDT"])
+    assert cfg.signals.trend_filter.atr_period == 14
+
+
+def test_trend_filter_atr_period_rejects_non_positive() -> None:
+    with pytest.raises(ValidationError):
+        SignalsCfg(trend_filter=TrendFilterCfg(atr_period=0))
