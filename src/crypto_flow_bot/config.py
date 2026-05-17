@@ -89,7 +89,7 @@ class OiSurgeCfg(BaseModel):
 class TakerConfirmationCfg(BaseModel):
     enabled: bool = True
     dominance_threshold: float = 0.55
-    cvd_window_bars: int = 6
+    cvd_window_bars: int = Field(default=6, ge=1)
     cvd_alignment_required: bool = False
 
 

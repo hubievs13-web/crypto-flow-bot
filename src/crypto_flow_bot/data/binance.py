@@ -361,6 +361,10 @@ def _oi_history_limit(window_minutes: int) -> int:
     return max(2, math.ceil(window_minutes / 5) + 1)
 
 
+def _short_klines_limit(*, ema_period: int, slope_window_bars: int, cvd_window_bars: int, buffer_bars: int = 5) -> int:
+    return max(ema_period + slope_window_bars + buffer_bars, cvd_window_bars + buffer_bars)
+
+
 async def build_snapshot(
     client: BinanceClient,
     liq_stream: LiquidationStream,
@@ -400,10 +404,12 @@ async def build_snapshot(
     oi_hist = await client.open_interest_history(
         symbol, period="5m", limit=_oi_history_limit(oi_window_minutes)
     )
-        # PR fix P0-5: limits must be >= ema_period + slope_window_bars + 1 in-progress
+    # PR fix P0-5: limits must be >= ema_period + slope_window_bars + 1 in-progress
     # bar so that _kline_derivatives can compute EMA slopes. Keep short-timeframe
     # and 4h limits separate because their slope windows may differ.
-    short_klines_limit = ema_period + slope_window_bars + 5
+    short_klines_limit = _short_klines_limit(
+        ema_period=ema_period, slope_window_bars=slope_window_bars, cvd_window_bars=cvd_window_bars
+    )
     klines_4h_limit = ema_period + slope_window_bars_4h + 5
     klines_1h = await client.klines(symbol, timeframe_short, limit=short_klines_limit)
     klines_1h_ts = datetime.now(tz=UTC)
