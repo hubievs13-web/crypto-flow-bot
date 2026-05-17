@@ -138,14 +138,24 @@ class BinanceClient:
         assert isinstance(data, list)
         return data
 
-    async def top_long_short_position_ratio(self, symbol: str, period: str = "5m") -> float:
+    async def top_long_short_position_ratio(self, symbol: str, period: str = "5m") -> float | None:
         """Latest top-traders long/short *position* ratio."""
         data = await self._get(
             "/futures/data/topLongShortPositionRatio",
             {"symbol": symbol, "period": period, "limit": 1},
         )
-        assert isinstance(data, list) and data
-        return float(data[0]["longShortRatio"])
+        if not isinstance(data, list) or not data:
+            return None
+        first = data[0]
+        if not isinstance(first, dict):
+            return None
+        ratio_raw = first.get("longShortRatio")
+        if ratio_raw is None:
+            return None
+        try:
+            return float(str(ratio_raw))
+        except ValueError:
+            return None
 
     async def latest_price(self, symbol: str) -> float:
         data = await self._get("/fapi/v1/ticker/price", {"symbol": symbol})
