@@ -71,6 +71,7 @@ class PredictedFundingCfg(BaseModel):
 
 class RegimeCfg(BaseModel):
     enabled: bool = True
+    timeframe: Literal["1h", "15m"] = "1h"
     adx_period: int = 14
     trend_adx_threshold: float = 25
     range_adx_threshold: float = 20

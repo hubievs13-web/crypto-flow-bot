@@ -161,6 +161,7 @@ signals:
 
   regime:
     enabled: true
+    timeframe: "1h"
     adx_period: 14
     trend_adx_threshold: 25
     range_adx_threshold: 20
