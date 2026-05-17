@@ -8,7 +8,9 @@ future regression is easy to bisect from the assertion message.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock
 
 from crypto_flow_bot.config import (
     Config,
@@ -25,6 +27,7 @@ from crypto_flow_bot.data.binance import _compute_predicted_funding, _kline_deri
 from crypto_flow_bot.engine.funding_history import FundingHistoryCache
 from crypto_flow_bot.engine.models import Direction, Snapshot
 from crypto_flow_bot.engine.signals import evaluate
+from crypto_flow_bot.main import Bot
 
 
 def _snap(**kw) -> Snapshot:
@@ -182,6 +185,66 @@ def test_hard_block_freshness_disabled_keeps_legacy_per_rule_behavior() -> None:
     out = evaluate(snap, cfg)
     assert any(c.direction is Direction.LONG for c in out), \
         "legacy mode (no hard-block) must still let liq_cascade through"
+
+
+def test_predicted_funding_cold_start_no_seed_from_realized() -> None:
+    """After P0-7, _backfill_funding_history must seed ONLY the realized
+    cache. The predicted cache must remain empty until live polls arrive."""
+    base = datetime(2026, 5, 1, tzinfo=UTC)
+    points = [
+        (base + timedelta(hours=8 * i), 0.0001 * (i + 1)) for i in range(3)
+    ]
+
+    cfg = _base_cfg()  # BTCUSDT, defaults
+    client = AsyncMock()
+    client.funding_rate_history = AsyncMock(return_value=points)
+
+    # Construct a Bot without invoking __init__ — _backfill_funding_history
+    # only needs cfg, client, funding_history, predicted_funding_history.
+    bot = Bot.__new__(Bot)
+    bot.cfg = cfg
+    bot.client = client
+    bot.funding_history = FundingHistoryCache(max_points=1000)
+    bot.predicted_funding_history = FundingHistoryCache(max_points=1000)
+
+    asyncio.run(bot._backfill_funding_history())
+
+    assert bot.funding_history.size("BTCUSDT") == 3, \
+        "realized cache must still be seeded after P0-7"
+    assert bot.predicted_funding_history.size("BTCUSDT") == 0, \
+        "predicted cache must NOT be seeded from realized history (P0-7)"
+
+
+def test_predicted_funding_auto_yields_none_below_min_points() -> None:
+    """Cold start: predicted cache under min_points -> zscore/percentile
+    return None, so _evaluate_funding_extreme falls through to fixed."""
+    cache = FundingHistoryCache(max_points=1000)
+    base = datetime(2026, 5, 1, tzinfo=UTC)
+    for i in range(19):  # one below default min_history_points=20
+        cache.update("BTCUSDT", base + timedelta(seconds=i), 0.0001)
+    now = base + timedelta(days=1)
+    assert cache.zscore(
+        "BTCUSDT", 0.001, now, lookback_days=14, min_points=20
+    ) is None
+    assert cache.percentile_rank(
+        "BTCUSDT", 0.001, now, lookback_days=30, min_points=20
+    ) is None
+
+
+def test_predicted_funding_auto_activates_at_min_points() -> None:
+    cache = FundingHistoryCache(max_points=1000)
+    base = datetime(2026, 5, 1, tzinfo=UTC)
+    # 21 distinct ts so the dedup in `update` does not drop any.
+    # Use small but non-zero spread so variance is not numerically zero.
+    for i in range(21):
+        cache.update("BTCUSDT", base + timedelta(seconds=i), 0.0001 + i * 1e-6)
+    now = base + timedelta(days=1)
+    assert cache.zscore(
+        "BTCUSDT", 0.0001, now, lookback_days=14, min_points=20
+    ) is not None
+    assert cache.percentile_rank(
+        "BTCUSDT", 0.0001, now, lookback_days=30, min_points=20
+    ) is not None
 
 
 # ─── P0-3 + P0-4 (predicted funding signal still wired correctly) ────────

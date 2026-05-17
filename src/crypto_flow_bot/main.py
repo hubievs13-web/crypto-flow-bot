@@ -150,11 +150,16 @@ class Bot:
             await self.liq_stream.stop()
 
     async def _backfill_funding_history(self) -> None:
-        """Seed funding history caches from Binance for every watched symbol.
+        """Seed the realized funding-rate history cache from Binance.
 
-        Fired once at startup. Each call returns up to 1000 8h funding points
-        (~333 days). We fetch the full window so future lookback knobs (e.g.
-        90-day percentile) can be raised without redeploying.
+        Fired once at startup. Each call returns up to 1000 8h funding
+        points (~333 days). Only the realized cache is seeded — the
+        predicted-funding cache starts empty on purpose (P0-7 / Q8):
+        realized is post-settlement, predicted drifts intra-cycle, and
+        mixing the two would bias predicted z-score / percentile.
+        Until `predicted_funding.min_history_points` real predicted
+        observations have accumulated, auto-mode yields None and the
+        rule falls through to the fixed thresholds.
         """
         for symbol in self.cfg.symbols:
             try:
@@ -163,12 +168,6 @@ class Bot:
                 log.warning("funding history backfill for %s failed: %s", symbol, e)
                 continue
             n = self.funding_history.backfill(symbol, points)
-            # PR fix P0-4: seed predicted-funding cache with realized history
-            # as a cold-start proxy so z/p have something to compare against
-            # while the predicted series is still gathering points. Once the
-            # predicted series exceeds min_history_points, evictions naturally
-            # take over and the realized seed rolls out of the lookback window.
-            self.predicted_funding_history.backfill(symbol, points)
             log.info("funding history backfilled for %s: %d points", symbol, n)
 
     # ---------- loops ----------
