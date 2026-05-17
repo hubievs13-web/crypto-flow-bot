@@ -84,7 +84,6 @@ signals:
     enabled: true
     window_minutes: 60
     pct_change_threshold: 0.025
-    require_price_aligned: true
     require_healthy: true
     quality_epsilon_pct: 0.0005
 
@@ -188,7 +187,6 @@ signals:
         enabled: true
         window_minutes: 60
         pct_change_threshold: 0.025      # 2.5% / 1h
-        require_price_aligned: true
         require_healthy: true
         quality_epsilon_pct: 0.0005
       liq_cascade:
@@ -209,7 +207,6 @@ signals:
         enabled: true
         window_minutes: 60
         pct_change_threshold: 0.025
-        require_price_aligned: true
         require_healthy: true
         quality_epsilon_pct: 0.0005
       liq_cascade:
@@ -236,7 +233,6 @@ signals:
         enabled: true
         window_minutes: 60
         pct_change_threshold: 0.030      # SOL OI moves faster than BTC/ETH
-        require_price_aligned: true
         require_healthy: true
         quality_epsilon_pct: 0.0005
       liq_cascade:
