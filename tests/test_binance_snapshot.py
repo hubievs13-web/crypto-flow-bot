@@ -15,6 +15,7 @@ import pytest
 from crypto_flow_bot.data.binance import (
     _kline_derivatives,
     _oi_history_limit,
+    _short_klines_limit,
     _taker_quote_volumes,
     build_snapshot,
 )
@@ -485,3 +486,61 @@ async def test_build_snapshot_default_mode_keeps_indicator_inputs_unchanged():
     first_call = client.klines.await_args_list[0]
     assert first_call.args[1] == "1h"
     assert first_call.kwargs["limit"] == 61
+
+
+def test_short_klines_limit_accounts_for_cvd_window() -> None:
+    assert _short_klines_limit(ema_period=50, slope_window_bars=6, cvd_window_bars=6) == 61
+    assert _short_klines_limit(ema_period=50, slope_window_bars=6, cvd_window_bars=24) == 61
+    assert _short_klines_limit(ema_period=50, slope_window_bars=6, cvd_window_bars=80) == 85
+
+
+@pytest.mark.asyncio
+async def test_build_snapshot_default_passes_cvd_window_6(monkeypatch):
+    client = AsyncMock()
+    client.funding_rate.return_value = 0.0
+    client.open_interest_usd.return_value = 1_000_000.0
+    client.top_long_short_position_ratio.return_value = 1.0
+    client.latest_price.return_value = 100.0
+    client.open_interest_history.return_value = []
+    client.klines = AsyncMock(return_value=_trending_klines())
+
+    liq_stream = AsyncMock()
+    liq_stream.totals = lambda _symbol: (0.0, 0.0)
+
+    cvd_windows: list[int] = []
+
+    def _spy_cvd(_klines, window_bars: int):
+        cvd_windows.append(window_bars)
+        return 0.0
+
+    monkeypatch.setattr("crypto_flow_bot.data.binance._cvd_window_usd", _spy_cvd)
+
+    await build_snapshot(client, liq_stream, "BTCUSDT", oi_window_minutes=60)
+
+    assert cvd_windows == [6]
+
+
+@pytest.mark.asyncio
+async def test_build_snapshot_passes_configured_cvd_window_24(monkeypatch):
+    client = AsyncMock()
+    client.funding_rate.return_value = 0.0
+    client.open_interest_usd.return_value = 1_000_000.0
+    client.top_long_short_position_ratio.return_value = 1.0
+    client.latest_price.return_value = 100.0
+    client.open_interest_history.return_value = []
+    client.klines = AsyncMock(return_value=_trending_klines())
+
+    liq_stream = AsyncMock()
+    liq_stream.totals = lambda _symbol: (0.0, 0.0)
+
+    cvd_windows: list[int] = []
+
+    def _spy_cvd(_klines, window_bars: int):
+        cvd_windows.append(window_bars)
+        return 0.0
+
+    monkeypatch.setattr("crypto_flow_bot.data.binance._cvd_window_usd", _spy_cvd)
+
+    await build_snapshot(client, liq_stream, "BTCUSDT", oi_window_minutes=60, cvd_window_bars=24)
+
+    assert cvd_windows == [24]
