@@ -138,12 +138,22 @@ def _check_freshness(
 ) -> dict[str, bool]:
     """Compute per-rule freshness verdicts. True = stale (skip the rule)."""
     if not fresh.enabled:
-        return {"funding_extreme": False, "oi_surge": False, "lsr_extreme": False}
+        return {
+            "funding_extreme": False,
+            "predicted_funding_extreme": False,
+            "oi_surge": False,
+            "lsr_extreme": False,
+        }
     return {
         "funding_extreme": _metric_is_stale(
             snap_ts=snap.ts,
             metric_ts=snap.funding_rate_ts,
             max_age_seconds=fresh.funding_max_age_seconds,
+        ),
+        "predicted_funding_extreme": _metric_is_stale(
+            snap_ts=snap.ts,
+            metric_ts=snap.predicted_funding_ts,
+            max_age_seconds=fresh.predicted_funding_max_age_seconds,
         ),
         "oi_surge": _metric_is_stale(
             snap_ts=snap.ts,
@@ -161,6 +171,8 @@ def _check_freshness(
 def _check_hard_block_freshness(
     snap: Snapshot,
     fresh: FreshnessCfg,
+    *,
+    predicted_funding_enabled: bool = False,
 ) -> list[str]:
     """Return list of stale critical metrics. Empty list = all fresh.
 
@@ -203,6 +215,13 @@ def _check_hard_block_freshness(
         missing_is_stale=missing,
     ):
         stale.append("klines_1h")
+    if predicted_funding_enabled and _metric_is_stale(
+        snap_ts=snap.ts,
+        metric_ts=snap.predicted_funding_ts,
+        max_age_seconds=fresh.predicted_funding_max_age_seconds,
+        missing_is_stale=missing,
+    ):
+        stale.append("predicted_funding")
     return stale
 
 
@@ -307,7 +326,11 @@ def evaluate(
     # stale or missing-ts, drop the entire candidate set up-front. Note this
     # runs BEFORE the per-rule downgrade pass so funding/OI/LSR rules cannot
     # even attempt to fire on stale data.
-    hard_stale = _check_hard_block_freshness(snap, sig.freshness)
+    hard_stale = _check_hard_block_freshness(
+        snap,
+        sig.freshness,
+        predicted_funding_enabled=sig.predicted_funding.enabled,
+    )
     if hard_stale:
         log.info(
             "freshness hard-block: dropping all candidates for %s due to stale: %s",
@@ -338,7 +361,8 @@ def evaluate(
             else:
                 long_rules.append(rule)
 
-    if sig.predicted_funding.enabled and snap.predicted_funding_rate is not None and not stale["funding_extreme"]:
+    # Predicted has its own ts set only when premium_index succeeds; its outage drops only predicted, not realized.
+    if sig.predicted_funding.enabled and snap.predicted_funding_rate is not None and not stale["predicted_funding_extreme"]:
         # Predicted funding has its own fixed-mode thresholds (PR fix P0-4) so
         # the cold-start fallback is independent of the realized-funding rule.
         predicted_cfg = FundingExtremeCfg(
