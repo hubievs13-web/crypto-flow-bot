@@ -426,7 +426,13 @@ async def test_build_snapshot_dry_run_validates_inactive_15m_example_config():
     assert regime_call.args[1] == "1h"
     assert regime_call.kwargs["limit"] >= 15
     assert call_4h.args[1] == "4h"
-    assert call_4h.kwargs["limit"] == 61
+    expected_4h_limit = (
+        cfg.signals.trend_filter.ema_period
+        + cfg.signals.trend_filter.slope_window_bars_4h
+        + 5
+    )
+    assert call_4h.kwargs["limit"] == expected_4h_limit
+    assert call_4h.kwargs["limit"] != short_call.kwargs["limit"]
 
     snapshot_fields = {f.name for f in fields(Snapshot)}
     assert {"ema50_1h", "atr_1h", "adx_1h", "atr_pct_1h"}.issubset(snapshot_fields)
