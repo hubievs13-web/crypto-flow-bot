@@ -402,6 +402,71 @@ async def test_build_snapshot_uses_configured_short_timeframe_15m_and_keeps_4h_r
     assert intervals[1] == "4h"
 
 
+
+
+@pytest.mark.asyncio
+async def test_build_snapshot_uses_separate_short_and_4h_limits_and_slope_windows(monkeypatch):
+    client = AsyncMock()
+    client.funding_rate.return_value = 0.0
+    client.open_interest_usd.return_value = 1_000_000.0
+    client.top_long_short_position_ratio.return_value = 1.0
+    client.latest_price.return_value = 100.0
+    client.open_interest_history.return_value = []
+    client.klines = AsyncMock(return_value=_trending_klines())
+
+    liq_stream = AsyncMock()
+    liq_stream.totals = lambda _symbol: (0.0, 0.0)
+
+    slope_windows: list[int] = []
+
+    def _spy_kline_derivatives(_klines, *, slope_window_bars=6):
+        slope_windows.append(slope_window_bars)
+        return (0.0, 100.0, 1.0, 0.001)
+
+    monkeypatch.setattr("crypto_flow_bot.data.binance._kline_derivatives", _spy_kline_derivatives)
+
+    await build_snapshot(
+        client,
+        liq_stream,
+        "BTCUSDT",
+        oi_window_minutes=60,
+        timeframe_short="15m",
+        slope_window_bars=24,
+        slope_window_bars_4h=6,
+    )
+
+    assert client.klines.await_count == 2
+    short_call, call_4h = client.klines.await_args_list
+    assert short_call.args[1] == "15m"
+    assert short_call.kwargs["limit"] == 79
+    assert call_4h.args[1] == "4h"
+    assert call_4h.kwargs["limit"] == 61
+    assert slope_windows == [24, 6]
+
+
+@pytest.mark.asyncio
+async def test_build_snapshot_default_mode_keeps_1h_and_4h_limits_at_61():
+    client = AsyncMock()
+    client.funding_rate.return_value = 0.0
+    client.open_interest_usd.return_value = 1_000_000.0
+    client.top_long_short_position_ratio.return_value = 1.0
+    client.latest_price.return_value = 100.0
+    client.open_interest_history.return_value = []
+    client.klines = AsyncMock(return_value=_trending_klines())
+
+    liq_stream = AsyncMock()
+    liq_stream.totals = lambda _symbol: (0.0, 0.0)
+
+    await build_snapshot(client, liq_stream, "BTCUSDT", oi_window_minutes=60)
+
+    assert client.klines.await_count == 2
+    first_call, second_call = client.klines.await_args_list
+    assert first_call.args[1] == "1h"
+    assert first_call.kwargs["limit"] == 61
+    assert second_call.args[1] == "4h"
+    assert second_call.kwargs["limit"] == 61
+
+
 @pytest.mark.asyncio
 async def test_build_snapshot_default_mode_keeps_indicator_inputs_unchanged():
     client = AsyncMock()

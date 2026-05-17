@@ -130,6 +130,7 @@ class TrendFilterCfg(BaseModel):
     require_1h_slope_alignment: bool = True
     require_4h_slope_alignment: bool = False
     slope_window_bars: int = 6
+    slope_window_bars_4h: int = 6
     slope_min_abs: float = 0.0005
     hard_block_on_4h: bool = False
     hard_block_on_slope: bool = False
