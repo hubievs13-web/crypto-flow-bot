@@ -171,6 +171,16 @@ class Bot:
             log.info("funding history backfilled for %s: %d points", symbol, n)
 
     # ---------- loops ----------
+    async def _safe_log_write(self, op: str, writer, **context) -> bool:  # type: ignore[no-untyped-def]
+        try:
+            await writer()
+            return True
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            ctx = ", ".join(f"{k}={v}" for k, v in context.items() if v is not None)
+            log.warning("log_store.%s failed (%s): %s", op, ctx or "no-context", e)
+            return False
 
     async def _poll_loop(self) -> None:
         while not self._stop.is_set():
@@ -200,7 +210,11 @@ class Bot:
                     continue
                 self._augment_with_funding_stats(snap)
                 self._last_full_snapshot[symbol] = snap
-                await self.logger.write_snapshot(snap)
+                await self._safe_log_write(
+                    "write_snapshot",
+                    lambda snap=snap: self.logger.write_snapshot(snap),
+                    symbol=symbol,
+                )
                 await self._handle_entry_signals(snap)
             await self._sleep(self.cfg.poll_interval_seconds)
 
@@ -273,7 +287,11 @@ class Bot:
                     continue
                 self._augment_with_funding_stats(snap)
                 self._last_full_snapshot[symbol] = snap
-                await self.logger.write_snapshot(snap)
+                await self._safe_log_write(
+                    "write_snapshot",
+                    lambda snap=snap: self.logger.write_snapshot(snap),
+                    symbol=symbol,
+                )
                 await self._handle_entry_signals(snap)
             await self._sleep(self.cfg.liq_fast_check_interval_seconds)
 
@@ -504,37 +522,77 @@ class Bot:
                 ),
             )
             for c in candidates:
-                await self.logger.write_blocked(
-                    signal_id=c.signal_id,
+                await self._safe_log_write(
+                    "write_blocked",
+                    lambda c=c, snap=snap: self.logger.write_blocked(
+                        signal_id=c.signal_id,
+                        symbol=c.symbol,
+                        direction=c.direction,
+                        blocked_reason="conflicting_signals",
+                        fired_rules=[r.name for r in c.fired_rules],
+                        confluence_window_rules=list(c.confluence_window_rules),
+                        snapshot_ts=snap.ts,
+                    ),
                     symbol=c.symbol,
-                    direction=c.direction,
-                    blocked_reason="conflicting_signals",
-                    fired_rules=[r.name for r in c.fired_rules],
-                    confluence_window_rules=list(c.confluence_window_rules),
-                    snapshot_ts=snap.ts,
+                    signal_id=c.signal_id,
                 )
             return
         for candidate in candidates:
             blocked_reason = self._entry_blocked_reason(candidate)
             if blocked_reason is not None:
                 self._maybe_log_skip(candidate, blocked_reason)
-                await self.logger.write_blocked(
-                    signal_id=candidate.signal_id,
+                await self._safe_log_write(
+                    "write_blocked",
+                    lambda candidate=candidate, blocked_reason=blocked_reason, snap=snap: self.logger.write_blocked(
+                        signal_id=candidate.signal_id,
+                        symbol=candidate.symbol,
+                        direction=candidate.direction,
+                        blocked_reason=blocked_reason,
+                        fired_rules=[r.name for r in candidate.fired_rules],
+                        confluence_window_rules=list(candidate.confluence_window_rules),
+                        snapshot_ts=snap.ts,
+                    ),
                     symbol=candidate.symbol,
-                    direction=candidate.direction,
-                    blocked_reason=blocked_reason,
-                    fired_rules=[r.name for r in candidate.fired_rules],
-                    confluence_window_rules=list(candidate.confluence_window_rules),
-                    snapshot_ts=snap.ts,
+                    signal_id=candidate.signal_id,
                 )
                 continue
             position = self.state.open_from_signal(candidate, self.cfg)
+            alert = format_entry_alert(candidate, position, self.cfg)
+            wrote_pos = await self._safe_log_write(
+                "write_position",
+                lambda position=position: self.logger.write_position(position),
+                symbol=position.symbol,
+                position_id=position.id,
+            )
+            if not wrote_pos:
+                self.state.positions.pop(position.id, None)
+                continue
             self.state.mark_alerted(candidate.symbol, candidate.direction)
             self.state.save()
-            alert = format_entry_alert(candidate, position, self.cfg)
-            await self.notifier.send(alert.text)
-            await self.logger.write_alert(alert)
-            await self.logger.write_position(position)
+            try:
+                await self.notifier.send(alert.text)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                log.warning(
+                    "telegram ENTRY send failed for %s %s signal_id=%s: %s",
+                    candidate.symbol, candidate.direction.value, candidate.signal_id, e,
+                )
+                await self._safe_log_write(
+                    "write_alert",
+                    lambda alert=alert: self.logger.write_alert(alert),
+                    symbol=candidate.symbol,
+                    signal_id=candidate.signal_id,
+                    send_status="failed_to_send",
+                )
+                continue
+            await self._safe_log_write(
+                "write_alert",
+                lambda alert=alert: self.logger.write_alert(alert),
+                symbol=candidate.symbol,
+                signal_id=candidate.signal_id,
+                send_status="sent",
+            )
 
     def _entry_blocked_reason(self, candidate) -> str | None:  # type: ignore[no-untyped-def]
         """Run the risk gates in order and return the first blocking reason.
@@ -607,15 +665,69 @@ class Bot:
 
     async def _handle_exit_event(self, position, ev, price: float) -> None:  # type: ignore[no-untyped-def]
         cfg = self.cfg
+        pre_open_fraction = position.open_fraction
+        pre_stop_loss_price = position.stop_loss_price
+        pre_closed = position.closed
+        pre_close_ts = position.close_ts
+        pre_close_reason = position.close_reason
+        pre_close_price = position.close_price
+        pre_last_close_ts = self.state.last_close_ts.get((position.symbol, position.direction))
         if ev.kind == "TRAILING_MOVE":
             if ev.new_stop_loss_price is not None:
                 position.stop_loss_price = ev.new_stop_loss_price
         elif ev.fraction_closed > 0:
             self.state.close_position(position, price, reason=ev.kind, fraction=ev.fraction_closed)
         alert = format_exit_alert(position, ev, price, cfg)
-        await self.notifier.send(alert.text)
-        await self.logger.write_alert(alert)
-        await self.logger.write_position(position)
+        wrote_pos = await self._safe_log_write(
+            "write_position",
+            lambda: self.logger.write_position(position),
+            symbol=position.symbol,
+            position_id=position.id,
+            event=ev.kind,
+        )
+        if not wrote_pos:
+            position.open_fraction = pre_open_fraction
+            position.stop_loss_price = pre_stop_loss_price
+            position.closed = pre_closed
+            position.close_ts = pre_close_ts
+            position.close_reason = pre_close_reason
+            position.close_price = pre_close_price
+            key = (position.symbol, position.direction)
+            if pre_last_close_ts is None:
+                self.state.last_close_ts.pop(key, None)
+            else:
+                self.state.last_close_ts[key] = pre_last_close_ts
+            log.warning(
+                "skip telegram EXIT send because position write failed for %s position_id=%s event=%s",
+                position.symbol, position.id, ev.kind,
+            )
+            return
+        try:
+            await self.notifier.send(alert.text)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            log.warning(
+                "telegram EXIT send failed for %s position_id=%s event=%s: %s",
+                position.symbol, position.id, ev.kind, e,
+            )
+            await self._safe_log_write(
+                "write_alert",
+                lambda: self.logger.write_alert(alert),
+                symbol=position.symbol,
+                position_id=position.id,
+                event=ev.kind,
+                send_status="failed_to_send",
+            )
+            return
+        await self._safe_log_write(
+            "write_alert",
+            lambda: self.logger.write_alert(alert),
+            symbol=position.symbol,
+            position_id=position.id,
+            event=ev.kind,
+            send_status="sent",
+        )
 
     async def _sleep(self, seconds: float) -> None:
         try:
