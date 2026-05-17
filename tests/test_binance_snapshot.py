@@ -252,6 +252,48 @@ async def test_build_snapshot_to_log_dict_is_json_serializable():
     json.dumps(snap.to_log_dict())
 
 
+@pytest.mark.asyncio
+async def test_build_snapshot_forwards_predicted_funding_interest_clamp_abs(monkeypatch):
+    client = AsyncMock()
+    client.funding_rate.return_value = 0.0
+    client.open_interest_usd.return_value = 1_000_000.0
+    client.top_long_short_position_ratio.return_value = 1.0
+    client.latest_price.return_value = 100.0
+    client.open_interest_history.return_value = []
+    client.klines = AsyncMock(return_value=_trending_klines())
+    client.premium_index.return_value = {
+        "lastFundingRate": 0.0,
+        "nextFundingTime": datetime.now(tz=UTC),
+        "interestRate": 0.0012,
+        "markPrice": 100.0,
+        "indexPrice": 100.0,
+    }
+
+    liq_stream = AsyncMock()
+    liq_stream.totals = lambda _symbol: (0.0, 0.0)
+
+    captured = {}
+
+    def _fake_compute(mark_price, index_price, interest_rate, funding_cap, interest_clamp_abs):
+        captured["args"] = (mark_price, index_price, interest_rate, funding_cap, interest_clamp_abs)
+        return 0.0
+
+    monkeypatch.setattr("crypto_flow_bot.data.binance._compute_predicted_funding", _fake_compute)
+
+    clamp = 0.0017
+    cap = 0.009
+    await build_snapshot(
+        client,
+        liq_stream,
+        "BTCUSDT",
+        oi_window_minutes=60,
+        predicted_funding_cap=cap,
+        predicted_funding_interest_clamp_abs=clamp,
+    )
+
+    assert captured["args"] == (100.0, 100.0, 0.0012, cap, clamp)
+
+
 # ─── funding_rate_history parser ────────────────────────────────────────────
 
 

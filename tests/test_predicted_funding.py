@@ -25,6 +25,15 @@ def test_predicted_clamp():
     assert _compute_predicted_funding(80, 100, -0.002, 0.0075) == -0.0075
 
 
+def test_predicted_funding_uses_interest_clamp_abs_parameter():
+    low_clamp = _compute_predicted_funding(100.0, 100.0, 0.002, 0.0075, interest_clamp_abs=0.0005)
+    high_clamp = _compute_predicted_funding(100.0, 100.0, 0.002, 0.0075, interest_clamp_abs=0.0020)
+
+    assert low_clamp == 0.0005
+    assert high_clamp == 0.002
+    assert low_clamp != high_clamp
+
+
 def test_predicted_signal_short_long_and_default_disabled():
     cfg = Config(symbols=['BTCUSDT'], notifier=NotifierCfg(), signals=SignalsCfg(
         oi_surge=OiSurgeCfg(enabled=False), lsr_extreme=LsrExtremeCfg(enabled=False), liq_cascade=LiqCascadeCfg(enabled=False),
