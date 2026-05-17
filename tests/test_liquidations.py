@@ -7,6 +7,7 @@ in-memory aggregation surface (`totals`, `totals_per_exchange`).
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 
@@ -14,6 +15,7 @@ from crypto_flow_bot.data.liquidations import (
     BinanceLiqStream,
     BybitLiqStream,
     LiquidationStream,
+    _ExchangeStream,
     _LiqEvent,
 )
 
@@ -181,3 +183,97 @@ def test_evicts_events_older_than_window():
 def _now():
     from datetime import UTC, datetime
     return datetime.now(tz=UTC)
+
+
+@pytest.mark.anyio
+async def test_exchange_stream_skips_parse_error_and_continues(caplog: pytest.LogCaptureFixture):
+    stopped = asyncio.Event()
+    events: list[_LiqEvent] = []
+
+    class _FakeWs:
+        def __init__(self, messages: list[str]) -> None:
+            self._messages = messages
+
+        def __aiter__(self):
+            self._it = iter(self._messages)
+            return self
+
+        async def __anext__(self):
+            try:
+                return next(self._it)
+            except StopIteration:
+                raise StopAsyncIteration from None
+
+    class _TestStream(_ExchangeStream):
+        name = "test"
+
+        def parse(self, msg: dict) -> list[_LiqEvent]:
+            if msg["kind"] == "bad":
+                raise RuntimeError("bad parse")
+            return [
+                _LiqEvent(
+                    symbol="BTCUSDT",
+                    liquidated_side="LONG",
+                    notional_usd=10.0,
+                    ts=_now(),
+                    exchange=self.name,
+                )
+            ]
+
+    stream = _TestStream(symbols=["BTCUSDT"], append=events.append, stopped=stopped)
+    ws = _FakeWs([json.dumps({"kind": "bad"}), json.dumps({"kind": "ok"})])
+
+    await stream._handle_socket(ws)  # type: ignore[arg-type]
+
+    assert len(events) == 1
+    assert events[0].notional_usd == pytest.approx(10.0)
+    assert "failed to process message" in caplog.text
+
+
+@pytest.mark.anyio
+async def test_supervisor_restarts_stream_after_crash():
+    stream = LiquidationStream(window_minutes=5, exchanges=[])
+
+    class _CrashThenStop:
+        name = "crashy"
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def run(self) -> None:
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("boom")
+            stream._stopped.set()
+
+    crashy = _CrashThenStop()
+    await stream._supervise_stream(crashy)  # type: ignore[arg-type]
+    assert crashy.calls >= 2
+
+
+@pytest.mark.anyio
+async def test_supervisor_bounds_restart_loop(caplog: pytest.LogCaptureFixture):
+    stream = LiquidationStream(window_minutes=5, exchanges=[])
+
+    class _AlwaysCrash:
+        name = "always-crash"
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def run(self) -> None:
+            self.calls += 1
+            raise RuntimeError("boom")
+
+    crashy = _AlwaysCrash()
+    await stream._supervise_stream(crashy)  # type: ignore[arg-type]
+    assert crashy.calls == 6
+    assert "exceeded restart limit" in caplog.text
+
+
+@pytest.mark.anyio
+async def test_stop_cancels_aggregator_task_cleanly():
+    stream = LiquidationStream(window_minutes=5, exchanges=[])
+    stream.start()
+    await stream.stop()
+    assert stream._task is None
