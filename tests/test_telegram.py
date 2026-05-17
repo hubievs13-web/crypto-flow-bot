@@ -40,7 +40,7 @@ def test_greeting_includes_disclaimer():
 
 from datetime import UTC, datetime  # noqa: E402
 
-from crypto_flow_bot.engine.models import Direction, Snapshot  # noqa: E402
+from crypto_flow_bot.engine.models import Direction, Position, Snapshot  # noqa: E402
 from crypto_flow_bot.engine.signals import FiredRule, SignalCandidate  # noqa: E402
 from crypto_flow_bot.engine.state import StateStore  # noqa: E402
 from crypto_flow_bot.notify.telegram import format_entry_alert  # noqa: E402
@@ -117,6 +117,35 @@ def test_format_entry_alert_omits_strong_for_single_rule(tmp_path, monkeypatch):
     store = StateStore(path=tmp_path)
     pos = store.open_from_signal(candidate, cfg)
     alert = format_entry_alert(candidate, pos, cfg)
+    assert "STRONG" not in alert.text
+
+
+def test_entry_alert_renders_downgrades_section():
+    cfg = Config(symbols=["BTCUSDT"], notifier=NotifierCfg(), signals=SignalsCfg())
+    snap = Snapshot(symbol="BTCUSDT", ts=datetime.now(tz=UTC), price=100.0)
+    cand = SignalCandidate(
+        symbol="BTCUSDT",
+        direction=Direction.SHORT,
+        fired_rules=[FiredRule(name="lsr_extreme", description="L/S 2.70")],
+        snapshot=snap,
+        confluence_window_rules={"lsr_extreme"},
+        entry_downgrades=[
+            FiredRule(name="taker_confirmation", description="taker n/c (40.0%)"),
+            FiredRule(name="trend_4h", description="trend_4h n/a"),
+        ],
+    )
+    pos = Position(
+        id="x1", symbol="BTCUSDT", direction=Direction.SHORT,
+        entry_price=100.0, entry_ts=datetime.now(tz=UTC),
+        reason="lsr_extreme", stop_loss_price=101.0,
+        initial_stop_loss_price=101.0,
+        entry_strength="weak",
+        entry_downgrades=["taker_confirmation", "trend_4h"],
+    )
+    alert = format_entry_alert(cand, pos, cfg)
+    assert "<b>Downgrades:</b>" in alert.text
+    assert "taker n/c" in alert.text
+    assert "trend_4h n/a" in alert.text
     assert "STRONG" not in alert.text
 
 

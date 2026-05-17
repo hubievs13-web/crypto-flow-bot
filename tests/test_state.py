@@ -98,6 +98,88 @@ def test_signal_id_and_entry_atr_round_trip(tmp_path):
 
 # ─── Post-exit cooldown ────────────────────────────────────────────────────
 
+def test_position_carries_entry_strength_and_downgrades(tmp_path, monkeypatch):
+    """open_from_signal must stamp entry_strength + entry_downgrades on
+    Position. Reload from disk must preserve both fields."""
+    from crypto_flow_bot.config import (
+        Config,
+        LiqCascadeCfg,
+        LsrExtremeCfg,
+        NotifierCfg,
+        OiSurgeCfg,
+        SignalsCfg,
+        TakerConfirmationCfg,
+        TrendFilterCfg,
+    )
+
+    monkeypatch.setenv("CRYPTO_FLOW_BOT_STATE_DIR", str(tmp_path))
+    cfg = Config(
+        symbols=["BTCUSDT"], notifier=NotifierCfg(),
+        signals=SignalsCfg(
+            oi_surge=OiSurgeCfg(enabled=False),
+            lsr_extreme=LsrExtremeCfg(enabled=False),
+            liq_cascade=LiqCascadeCfg(enabled=False),
+            taker_confirmation=TakerConfirmationCfg(enabled=False),
+            trend_filter=TrendFilterCfg(enabled=False),
+        ),
+    )
+    snap = Snapshot(symbol="BTCUSDT", ts=datetime.now(tz=UTC), price=100.0)
+    cand = SignalCandidate(
+        symbol="BTCUSDT",
+        direction=Direction.LONG,
+        fired_rules=[FiredRule(name="lsr_extreme", description="L/S 0.40")],
+        snapshot=snap,
+        confluence_window_rules={"lsr_extreme"},
+        strong_override=False,
+        entry_downgrades=[
+            FiredRule(name="taker_confirmation", description="taker n/c (40.0%)"),
+        ],
+    )
+
+    store = StateStore()
+    pos = store.open_from_signal(cand, cfg)
+    assert pos.entry_strength == "weak"
+    assert pos.entry_downgrades == ["taker_confirmation"]
+    assert "taker_confirmation" not in pos.reason
+
+    store.save()
+    reloaded = StateStore()
+    rp = next(iter(reloaded.positions.values()))
+    assert rp.entry_strength == "weak"
+    assert rp.entry_downgrades == ["taker_confirmation"]
+
+
+def test_state_load_back_compat_legacy_strong_field(tmp_path, monkeypatch):
+    """Old state.json without entry_strength/entry_downgrades must still load:
+    entry_strength derived from legacy `strong` boolean; downgrades = []."""
+    import json
+
+    monkeypatch.setenv("CRYPTO_FLOW_BOT_STATE_DIR", str(tmp_path))
+    path = tmp_path / "state.json"
+    legacy = {
+        "positions": [{
+            "id": "abc12345",
+            "symbol": "BTCUSDT",
+            "direction": "LONG",
+            "entry_price": 100.0,
+            "entry_ts": "2026-05-01T12:00:00+00:00",
+            "reason": "lsr_extreme+taker_confirmation",
+            "reason_metric_at_entry": {},
+            "stop_loss_price": 99.0,
+            "initial_stop_loss_price": 99.0,
+            "tp_levels": [],
+            "open_fraction": 1.0,
+            "closed": False,
+            "strong": True,
+        }],
+    }
+    path.write_text(json.dumps(legacy))
+    store = StateStore()
+    pos = next(iter(store.positions.values()))
+    assert pos.entry_strength == "strong"
+    assert pos.entry_downgrades == []
+
+
 def test_post_exit_cooldown_starts_on_full_close(tmp_path):
     """After a position fully closes, the per-(symbol, direction) cooldown
     must report >0 remaining seconds until the configured window elapses."""

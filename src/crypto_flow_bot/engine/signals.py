@@ -29,6 +29,9 @@ log = logging.getLogger(__name__)
 # the confluence window). When `funding_extreme_requires_confirmation` is on
 # in config, a candidate built only from these rules is dropped.
 CONFIRMATION_REQUIRED_RULES: frozenset[str] = frozenset({"funding_extreme", "predicted_funding_extreme"})
+DOWNGRADE_RULES: frozenset[str] = frozenset(
+    {"taker_confirmation", "trend_4h", "slope_1h", "slope_4h"}
+)
 
 
 def _metric_is_stale(
@@ -281,6 +284,7 @@ class SignalCandidate:
     # files can be joined.
     signal_id: str = field(default_factory=lambda: str(uuid.uuid4())[:8])
     strong_override: bool | None = None
+    entry_downgrades: list[FiredRule] = field(default_factory=list)
 
     @property
     def reason_label(self) -> str:
@@ -546,7 +550,7 @@ def evaluate(
             if side_dominance >= sig.taker_confirmation.dominance_threshold:
                 continue
             cand.strong_override = False
-            cand.fired_rules.append(
+            cand.entry_downgrades.append(
                 FiredRule(
                     name="taker_confirmation",
                     description=f"taker n/c ({side_dominance * 100:.1f}%)",
@@ -575,7 +579,7 @@ def evaluate(
             )
             if miss:
                 cand.strong_override = False
-                cand.fired_rules.append(FiredRule(name="trend_4h", description="trend_4h n/a"))
+                cand.entry_downgrades.append(FiredRule(name="trend_4h", description="trend_4h n/a"))
                 if tf.hard_block_on_4h:
                     drop = True
         if tf.require_1h_slope_alignment and cand.snapshot.ema50_slope_1h is not None:
@@ -586,7 +590,7 @@ def evaluate(
                 )
                 if miss:
                     cand.strong_override = False
-                    cand.fired_rules.append(
+                    cand.entry_downgrades.append(
                         FiredRule(
                             name="slope_1h",
                             description=f"slope_1h n/a ({s1 * 100:+.2f}%/{tf.slope_window_bars}h)",
@@ -602,7 +606,7 @@ def evaluate(
                 )
                 if miss:
                     cand.strong_override = False
-                    cand.fired_rules.append(
+                    cand.entry_downgrades.append(
                         FiredRule(
                             name="slope_4h",
                             description=f"slope_4h n/a ({s4 * 100:+.2f}%/{tf.slope_window_bars * 4}h)",

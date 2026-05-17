@@ -74,7 +74,8 @@ def test_taker_confirmation_downgrades_strong_when_dominance_fails():
     out = evaluate(snap, _cfg())
     short = [c for c in out if c.direction is Direction.SHORT][0]
     assert short.is_strong is False
-    assert any(r.name == "taker_confirmation" for r in short.fired_rules)
+    assert any(r.name == "taker_confirmation" for r in short.entry_downgrades)
+    assert all(r.name != "taker_confirmation" for r in short.fired_rules)
 
 
 def test_missing_dominance_does_not_downgrade():
@@ -96,3 +97,4 @@ def test_liq_cascade_never_downgraded():
     short = [c for c in out if c.direction is Direction.SHORT][0]
     assert short.is_strong is False
     assert all(r.name != "taker_confirmation" for r in short.fired_rules)
+    assert all(r.name != "taker_confirmation" for r in short.entry_downgrades)

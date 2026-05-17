@@ -115,6 +115,9 @@ def format_entry_alert(candidate: SignalCandidate, position: Position, cfg: Conf
     side = "LONG" if candidate.direction is Direction.LONG else "SHORT"
     strong_tag = " 🔥 <b>STRONG</b>" if candidate.is_strong else ""
     rule_lines = "\n".join(f"  • {r.description}" for r in candidate.fired_rules)
+    downgrade_lines = "\n".join(
+        f"  ↘ {d.description}" for d in candidate.entry_downgrades
+    )
     tp_lines = "\n".join(
         f"  TP{i + 1} ({lvl.fraction * 100:.0f}%): <code>{position.entry_price * (1 + position.direction.sign * lvl.pct):g}</code>  ({lvl.pct * 100:+.2f}%)"
         for i, lvl in enumerate(position.tp_levels)
@@ -125,7 +128,12 @@ def format_entry_alert(candidate: SignalCandidate, position: Position, cfg: Conf
         f"{arrow} <b>{side} {sym}</b> @ <code>{position.entry_price:g}</code>{strong_tag}\n"
         f"<i>{position.id}</i>\n"
         f"\n<b>Why:</b>\n{rule_lines}\n"
-        f"\n<b>Plan:</b>\n"
+        + (
+            f"\n<b>Downgrades:</b>\n{downgrade_lines}\n"
+            if candidate.entry_downgrades
+            else ""
+        )
+        + f"\n<b>Plan:</b>\n"
         f"  SL: <code>{position.stop_loss_price:g}</code>  ({sl_pct * 100:+.2f}%)\n"
         f"{tp_lines}\n"
         f"  Trailing: " + (

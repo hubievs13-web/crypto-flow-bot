@@ -78,6 +78,11 @@ class StateStore:
                     close_price=p.get("close_price"),
                     best_favorable_pct=float(p.get("best_favorable_pct", 0.0)),
                     strong=bool(p.get("strong", False)),
+                    entry_strength=p.get(
+                        "entry_strength",
+                        "strong" if p.get("strong") else "weak",
+                    ),
+                    entry_downgrades=list(p.get("entry_downgrades", [])),
                     signal_id=p.get("signal_id"),
                     entry_atr_1h=(
                         float(p["entry_atr_1h"])
@@ -245,6 +250,8 @@ class StateStore:
             initial_stop_loss_price=sl_price,
             tp_levels=tp_levels,
             strong=candidate.is_strong,
+            entry_strength="strong" if candidate.is_strong else "weak",
+            entry_downgrades=[d.name for d in candidate.entry_downgrades],
             signal_id=candidate.signal_id,
             entry_atr_1h=snap.atr_1h,
         )

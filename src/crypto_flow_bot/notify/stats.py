@@ -20,6 +20,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from crypto_flow_bot.engine.signals import DOWNGRADE_RULES
+
 if TYPE_CHECKING:
     from crypto_flow_bot.config import FeesCfg
 
@@ -160,7 +162,11 @@ def compute_stats(
         # Each position can fire on multiple rules (joined by '+'). We count
         # the position once per fired rule so each signal type's row reflects
         # how that signal performs across all its triggers.
-        reasons = [r.strip() for r in (pos.get("reason") or "").split("+") if r.strip()]
+        reasons = [
+            r.strip()
+            for r in (pos.get("reason") or "").split("+")
+            if r.strip() and r.strip() not in DOWNGRADE_RULES
+        ]
         if not reasons:
             reasons = ["unknown"]
         for r in reasons:
