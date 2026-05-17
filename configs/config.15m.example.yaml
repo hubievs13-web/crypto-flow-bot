@@ -1,0 +1,16 @@
+# Inactive example preset for future 15m dry-runs/backtests.
+# NOT loaded automatically. Default runtime remains `config.yaml` (1h).
+
+symbols:
+  - BTCUSDT
+
+signals:
+  timeframe_short: "15m"
+  taker_confirmation:
+    cvd_window_bars: 24
+  trend_filter:
+    ema_period: 200
+    slope_window_bars: 24
+    atr_period: 56
+  regime:
+    timeframe: "1h"

@@ -122,6 +122,19 @@ To override only some fields, copy `config.yaml` to `config.local.yaml`, edit, a
 
 ---
 
+
+### Optional inactive 15m preset (future use)
+
+The default runtime config remains **1h** (`config.yaml`).
+
+For future dry-runs/backtests, use `configs/config.15m.example.yaml` as a manual starting point. It is **not active by default** and nothing in runtime switches to it automatically.
+
+Preset intent (preserve the original strategy horizon while sampling faster bars):
+- EMA50 on 1h ≈ EMA200 on 15m
+- ATR14 on 1h ≈ ATR56 on 15m
+- 6-bar 1h slope/CVD ≈ 24-bar 15m slope/CVD
+- Regime stays on 1h (`signals.regime.timeframe: "1h"`)
+
 ## Operational notes
 
 - **The bot does not place orders.** Every alert is informational. You decide whether to act.
