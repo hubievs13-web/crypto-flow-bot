@@ -1,11 +1,11 @@
 """Append-only JSONL logger for snapshots, alerts, position events, and
 blocked-entry diagnostics.
 
-Each kind goes to its own file:
-  - snapshots.jsonl   — full poll snapshots (metrics + price + ATR)
-  - alerts.jsonl      — every alert sent to Telegram (ENTRY / SL_HIT / ...)
-  - positions.jsonl   — position lifecycle updates (one row per state change)
-  - blocked.jsonl     — entry candidates that were blocked before opening,
+Each kind goes to its own daily-partitioned file:
+  - snapshots-YYYY-MM-DD.jsonl — full poll snapshots (metrics + price + ATR)
+  - alerts-YYYY-MM-DD.jsonl    — every alert sent to Telegram (ENTRY / SL_HIT / ...)
+  - positions-YYYY-MM-DD.jsonl — position lifecycle updates (one row per state change)
+  - blocked-YYYY-MM-DD.jsonl   — entry candidates that were blocked before opening,
                         with `signal_id`, `blocked_reason`, and rule/window
                         context so they can be analyzed against snapshot data
 
@@ -36,23 +36,23 @@ class JsonlLogger:
         d = path or _log_dir()
         d.mkdir(parents=True, exist_ok=True)
         self._dir = d
-        self._snap_file = d / "snapshots.jsonl"
-        self._alert_file = d / "alerts.jsonl"
-        self._pos_file = d / "positions.jsonl"
-        self._blocked_file = d / "blocked.jsonl"
         self._lock = asyncio.Lock()
 
     @property
     def positions_path(self) -> Path:
-        return self._pos_file
+        return self._daily_path("positions")
 
     @property
     def alerts_path(self) -> Path:
-        return self._alert_file
+        return self._daily_path("alerts")
 
     @property
     def blocked_path(self) -> Path:
-        return self._blocked_file
+        return self._daily_path("blocked")
+
+    def _daily_path(self, prefix: str, ts: datetime | None = None) -> Path:
+        event_ts = ts or datetime.now(tz=UTC)
+        return self._dir / f"{prefix}-{event_ts.date().isoformat()}.jsonl"
 
     async def _append(self, file: Path, payload: dict) -> None:
         line = json.dumps(payload, ensure_ascii=False)
@@ -66,13 +66,17 @@ class JsonlLogger:
             f.write("\n")
 
     async def write_snapshot(self, snap: Snapshot) -> None:
-        await self._append(self._snap_file, snap.to_log_dict())
+        row = snap.to_log_dict()
+        await self._append(self._daily_path("snapshots", snap.ts), row)
 
     async def write_alert(self, alert: Alert) -> None:
-        await self._append(self._alert_file, alert.to_log_dict())
+        row = alert.to_log_dict()
+        await self._append(self._daily_path("alerts", alert.ts), row)
 
     async def write_position(self, pos: Position) -> None:
-        await self._append(self._pos_file, pos.to_log_dict())
+        row = pos.to_log_dict()
+        event_ts = pos.close_ts if pos.closed else None
+        await self._append(self._daily_path("positions", event_ts), row)
 
     async def write_blocked(
         self,
@@ -101,4 +105,4 @@ class JsonlLogger:
             "fired_rules": sorted(fired_rules),
             "confluence_window_rules": sorted(confluence_window_rules),
         }
-        await self._append(self._blocked_file, payload)
+        await self._append(self._daily_path("blocked", snapshot_ts), payload)

@@ -280,6 +280,42 @@ def test_read_latest_positions_missing_file_returns_empty(tmp_path):
     assert read_latest_positions(tmp_path / "does_not_exist.jsonl") == []
 
 
+def test_read_latest_positions_reads_legacy_and_daily_files(tmp_path):
+    (tmp_path / "positions.jsonl").write_text(
+        '{"id":"legacy","entry_ts":"2025-01-01T00:00:00+00:00","reason":"f","closed":false}\n'
+    )
+    (tmp_path / "positions-2025-01-02.jsonl").write_text(
+        '{"id":"daily","entry_ts":"2025-01-02T00:00:00+00:00","reason":"l","closed":true}\n'
+    )
+    rows = read_latest_positions(tmp_path / "positions.jsonl")
+    assert {row["id"] for row in rows} == {"legacy", "daily"}
+
+
+def test_read_latest_positions_cross_day_update_latest_wins(tmp_path):
+    (tmp_path / "positions-2025-01-01.jsonl").write_text(
+        '{"id":"a","entry_ts":"2025-01-01T00:00:00+00:00","reason":"f","closed":false,"close_reason":null,"close_price":null}\n'
+    )
+    (tmp_path / "positions-2025-01-02.jsonl").write_text(
+        '{"id":"a","entry_ts":"2025-01-01T00:00:00+00:00","reason":"f","closed":true,"close_reason":"TP_HIT","close_price":101.5}\n'
+    )
+    rows = read_latest_positions(tmp_path / "positions.jsonl")
+    stats = compute_stats(rows, now=datetime(2025, 1, 3, tzinfo=UTC), window_days=7)
+    assert stats["f"].closed == 1
+    assert stats["f"].tp1_hit == 0
+
+
+def test_read_latest_positions_partition_sorting_is_deterministic(tmp_path):
+    (tmp_path / "positions-2025-01-10.jsonl").write_text(
+        '{"id":"a","entry_ts":"2025-01-01T00:00:00+00:00","reason":"f","closed":true,"close_reason":"SL_HIT"}\n'
+    )
+    (tmp_path / "positions-2025-01-02.jsonl").write_text(
+        '{"id":"a","entry_ts":"2025-01-01T00:00:00+00:00","reason":"f","closed":false}\n'
+    )
+    rows = read_latest_positions(tmp_path / "positions.jsonl")
+    by_id = {r["id"]: r for r in rows}
+    assert by_id["a"]["close_reason"] == "SL_HIT"
+
+
 # ─── Weekly digest gate (Mon 12:00 UTC by default) ──────────────────────────
 
 

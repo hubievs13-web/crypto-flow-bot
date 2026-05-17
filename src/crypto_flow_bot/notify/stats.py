@@ -118,22 +118,25 @@ def position_pnl_pct(pos: dict, *, fees: FeesCfg | None = None) -> float | None:
 
 
 def read_latest_positions(positions_file: Path) -> list[dict]:
-    """Return latest state dict per position id from a positions.jsonl file."""
+    """Return latest state dict per position id from legacy+daily position logs."""
     latest: dict[str, dict] = {}
-    if not positions_file.is_file():
-        return []
-    with positions_file.open(encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                row = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            pid = row.get("id")
-            if pid:
-                latest[pid] = row
+    files: list[Path] = []
+    if positions_file.is_file():
+        files.append(positions_file)
+    files.extend(sorted(positions_file.parent.glob("positions-*.jsonl")))
+    for file in files:
+        with file.open(encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                pid = row.get("id")
+                if pid:
+                    latest[pid] = row
     return list(latest.values())
 
 
