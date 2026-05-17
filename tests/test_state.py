@@ -2,6 +2,7 @@
 
 import json
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 from crypto_flow_bot.config import Config
 from crypto_flow_bot.engine.models import Direction, Snapshot
@@ -53,6 +54,59 @@ def test_last_liveness_ping_date_round_trips(tmp_path):
     store.save()
     fresh = StateStore(path=tmp_path)
     assert fresh.last_liveness_ping_date == "2025-11-04"
+
+
+def _find_corrupt_backups(tmp_path: Path) -> list[Path]:
+    return sorted(tmp_path.glob("state.json.corrupt-*"))
+
+
+def test_state_load_malformed_json_renames_and_starts_fresh(tmp_path):
+    (tmp_path / "state.json").write_text("{not valid json")
+    store = StateStore(path=tmp_path)
+    assert store.positions == {}
+    backups = _find_corrupt_backups(tmp_path)
+    assert len(backups) == 1
+    assert backups[0].name.startswith("state.json.corrupt-")
+    assert not (tmp_path / "state.json").exists()
+
+
+def test_state_load_structurally_invalid_json_renames_and_starts_fresh(tmp_path):
+    (tmp_path / "state.json").write_text(json.dumps({"positions": {"not": "a-list"}}))
+    store = StateStore(path=tmp_path)
+    assert store.positions == {}
+    backups = _find_corrupt_backups(tmp_path)
+    assert len(backups) == 1
+    assert backups[0].name.startswith("state.json.corrupt-")
+
+
+def test_state_load_invalid_root_type_renames_and_starts_fresh(tmp_path):
+    (tmp_path / "state.json").write_text(json.dumps(["not", "an", "object"]))
+    store = StateStore(path=tmp_path)
+    assert store.positions == {}
+    backups = _find_corrupt_backups(tmp_path)
+    assert len(backups) == 1
+    assert backups[0].name.startswith("state.json.corrupt-")
+
+
+def test_state_load_read_oserror_starts_fresh_and_attempts_backup(tmp_path, monkeypatch):
+    path = tmp_path / "state.json"
+    path.write_text(json.dumps({"positions": []}))
+
+    def _raise_oserror(*_args, **_kwargs):
+        raise OSError("read fail")
+
+    monkeypatch.setattr(Path, "read_text", _raise_oserror)
+    store = StateStore(path=tmp_path)
+    assert store.positions == {}
+    backups = _find_corrupt_backups(tmp_path)
+    assert len(backups) == 1
+    assert backups[0].name.startswith("state.json.corrupt-")
+
+
+def test_state_load_missing_file_is_normal(tmp_path):
+    store = StateStore(path=tmp_path)
+    assert store.positions == {}
+    assert _find_corrupt_backups(tmp_path) == []
 
 
 def test_position_strong_flag_requires_two_non_funding_rules(tmp_path):

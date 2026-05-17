@@ -76,12 +76,40 @@ class StateStore:
     def _load(self) -> None:
         if not self.path.is_file():
             return
+        backup_path: Path | None = None
         try:
             raw = json.loads(self.path.read_text())
-        except json.JSONDecodeError:
-            log.warning("state file %s is corrupt; starting fresh", self.path)
+            if not isinstance(raw, dict):
+                raise TypeError("state root must be a JSON object")
+            positions = raw.get("positions", [])
+            if not isinstance(positions, list):
+                raise TypeError("state['positions'] must be a list")
+            last_alert_ts = raw.get("last_alert_ts", [])
+            if not isinstance(last_alert_ts, list):
+                raise TypeError("state['last_alert_ts'] must be a list")
+            last_close_ts = raw.get("last_close_ts", [])
+            if not isinstance(last_close_ts, list):
+                raise TypeError("state['last_close_ts'] must be a list")
+        except (json.JSONDecodeError, TypeError, AttributeError, OSError) as e:
+            ts = datetime.now(tz=UTC).strftime("%Y%m%d-%H%M%S")
+            backup_path = self.path.with_name(f"{self.path.name}.corrupt-{ts}")
+            try:
+                self.path.rename(backup_path)
+            except OSError as rename_err:
+                log.error(
+                    "failed to back up corrupt state file %s to %s: %s",
+                    self.path,
+                    backup_path,
+                    rename_err,
+                )
+            log.warning(
+                "failed loading state file %s; starting fresh (backup: %s): %s",
+                self.path,
+                backup_path,
+                e,
+            )
             return
-        for p in raw.get("positions", []):
+        for p in positions:
             try:
                 legacy_reason = str(p.get("reason", ""))
                 reason_rules = p.get("reason_rules")
@@ -124,14 +152,14 @@ class StateStore:
                     self.positions[pos.id] = pos
             except (KeyError, ValueError) as e:
                 log.warning("skipping malformed position in state: %s", e)
-        for entry in raw.get("last_alert_ts", []):
+        for entry in last_alert_ts:
             try:
                 self.last_alert_ts[(entry["symbol"], Direction(entry["direction"]))] = (
                     datetime.fromisoformat(entry["ts"])
                 )
             except (KeyError, ValueError):
                 continue
-        for entry in raw.get("last_close_ts", []):
+        for entry in last_close_ts:
             try:
                 self.last_close_ts[(entry["symbol"], Direction(entry["direction"]))] = (
                     datetime.fromisoformat(entry["ts"])
