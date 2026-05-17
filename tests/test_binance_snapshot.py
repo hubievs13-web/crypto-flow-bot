@@ -417,7 +417,12 @@ async def test_build_snapshot_dry_run_validates_inactive_15m_example_config():
     assert client.klines.await_count == 3
     short_call, regime_call, call_4h = client.klines.await_args_list
     assert short_call.args[1] == "15m"
-    assert short_call.kwargs["limit"] == 205
+    assert short_call.kwargs["limit"] == _short_klines_limit(
+        ema_period=cfg.signals.trend_filter.ema_period,
+        slope_window_bars=cfg.signals.trend_filter.slope_window_bars,
+        atr_period=cfg.signals.trend_filter.atr_period,
+        cvd_window_bars=cfg.signals.taker_confirmation.cvd_window_bars,
+    )
     assert regime_call.args[1] == "1h"
     assert regime_call.kwargs["limit"] >= 15
     assert call_4h.args[1] == "4h"
