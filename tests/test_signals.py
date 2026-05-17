@@ -174,7 +174,7 @@ def test_oi_surge_up_with_price_down_yields_short_signal():
 
 
 def test_oi_surge_without_price_data_does_not_fire():
-    # require_price_aligned=True (default) + missing price-change -> skip OI signal entirely.
+    # OI surge needs the 1h price-change to pick a side; without it the rule must skip.
     snap = _snap(open_interest_change_pct_window=0.07, price_change_pct_1h=None)
     out = evaluate(snap, _cfg())
     assert all(not any(r.name == "oi_surge" for r in c.fired_rules) for c in out)
@@ -185,6 +185,16 @@ def test_oi_decrease_does_not_fire_long_signal():
     snap = _snap(open_interest_change_pct_window=-0.07, price_change_pct_1h=0.012)
     out = evaluate(snap, _cfg())
     assert all(not any(r.name == "oi_surge" for r in c.fired_rules) for c in out)
+
+
+def test_oi_decrease_with_price_down_does_not_fire_short_signal():
+    snap = _snap(open_interest_change_pct_window=-0.07, price_change_pct_1h=-0.012, oi_quality="healthy_long")
+    assert all(not any(r.name == "oi_surge" for r in c.fired_rules) for c in evaluate(snap, _cfg()))
+
+
+def test_oi_surge_config_has_no_price_alignment_toggle_field():
+    removed_field = "require_price" + "_aligned"
+    assert removed_field not in OiSurgeCfg.model_fields
 
 
 # ─── Trend filter ───────────────────────────────────────────────────────────

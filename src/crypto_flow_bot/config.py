@@ -81,7 +81,6 @@ class OiSurgeCfg(BaseModel):
     enabled: bool = True
     window_minutes: int = 60
     pct_change_threshold: float = 0.05
-    require_price_aligned: bool = True
     require_healthy: bool = True
     quality_epsilon_pct: float = 0.0005
 
