@@ -397,10 +397,11 @@ async def test_build_snapshot_uses_configured_short_timeframe_15m_and_keeps_4h_r
         client, liq_stream, "BTCUSDT", oi_window_minutes=60, timeframe_short="15m"
     )
 
-    assert client.klines.await_count == 2
+    assert client.klines.await_count == 3
     intervals = [call.args[1] for call in client.klines.await_args_list]
     assert intervals[0] == "15m"
-    assert intervals[1] == "4h"
+    assert "1h" in intervals
+    assert "4h" in intervals
 
 
 
@@ -425,13 +426,13 @@ async def test_build_snapshot_uses_separate_short_and_4h_limits_and_slope_window
     def _spy_kline_derivatives(
         _klines,
         *,
-        _slope_window_bars: int,
-        _atr_period: int,
-        _ema_period: int,
+        slope_window_bars: int,
+        atr_period: int,
+        ema_period: int,
     ):
-        slope_windows.append(_slope_window_bars)
-        atr_periods.append(_atr_period)
-        ema_periods.append(_ema_period)
+        slope_windows.append(slope_window_bars)
+        atr_periods.append(atr_period)
+        ema_periods.append(ema_period)
         return (0.0, 100.0, 1.0, 0.001)
 
     monkeypatch.setattr("crypto_flow_bot.data.binance._kline_derivatives", _spy_kline_derivatives)
@@ -446,10 +447,12 @@ async def test_build_snapshot_uses_separate_short_and_4h_limits_and_slope_window
         slope_window_bars_4h=6,
     )
 
-    assert client.klines.await_count == 2
-    short_call, call_4h = client.klines.await_args_list
+    assert client.klines.await_count == 3
+    short_call, regime_call, call_4h = client.klines.await_args_list
     assert short_call.args[1] == "15m"
     assert short_call.kwargs["limit"] == 79
+    assert regime_call.args[1] == "1h"
+    assert regime_call.kwargs["limit"] == 79
     assert call_4h.args[1] == "4h"
     assert call_4h.kwargs["limit"] == 61
     assert slope_windows == [24, 6]
@@ -517,8 +520,11 @@ async def test_build_snapshot_reuses_short_klines_for_regime_when_timeframes_mat
 
     adx_inputs: list[list[list]] = []
 
-    def _spy_compute_adx(klines, _period: int):
+    adx_periods: list[int] = []
+
+    def _spy_compute_adx(klines, *, period: int):
         adx_inputs.append(klines)
+        adx_periods.append(period)
         return 25.0
 
     monkeypatch.setattr("crypto_flow_bot.data.binance.compute_adx", _spy_compute_adx)
@@ -537,6 +543,7 @@ async def test_build_snapshot_reuses_short_klines_for_regime_when_timeframes_mat
     assert intervals.count("1h") == 1
     assert intervals.count("4h") == 1
     assert adx_inputs
+    assert adx_periods == [14]
 
 
 @pytest.mark.asyncio
@@ -544,7 +551,9 @@ async def test_build_snapshot_splits_short_and_regime_klines_when_timeframes_dif
     short_klines = _trending_klines()
     regime_klines = [_kline_row(1_000.0 + i) for i in range(52)]
 
-    async def _fake_klines(_symbol: str, interval: str, _limit: int = 51):
+    async def _fake_klines(symbol: str, interval: str, *, limit: int):
+        assert symbol == "BTCUSDT"
+        assert limit == 61
         if interval == "15m":
             return short_klines
         if interval == "1h":
@@ -564,19 +573,28 @@ async def test_build_snapshot_splits_short_and_regime_klines_when_timeframes_dif
 
     kline_inputs: list[list[list]] = []
     adx_inputs: list[list[list]] = []
+    slope_windows: list[int] = []
+    atr_periods: list[int] = []
+    ema_periods: list[int] = []
 
     def _spy_kline_derivatives(
         klines,
         *,
-        _slope_window_bars: int,
-        _atr_period: int,
-        _ema_period: int,
+        slope_window_bars: int,
+        atr_period: int,
+        ema_period: int,
     ):
         kline_inputs.append(klines)
+        slope_windows.append(slope_window_bars)
+        atr_periods.append(atr_period)
+        ema_periods.append(ema_period)
         return (0.0, 100.0, 1.0, 0.0)
 
-    def _spy_compute_adx(klines, _period: int):
+    adx_periods: list[int] = []
+
+    def _spy_compute_adx(klines, *, period: int):
         adx_inputs.append(klines)
+        adx_periods.append(period)
         return 25.0
 
     monkeypatch.setattr("crypto_flow_bot.data.binance._kline_derivatives", _spy_kline_derivatives)
@@ -596,7 +614,11 @@ async def test_build_snapshot_splits_short_and_regime_klines_when_timeframes_dif
     assert "1h" in intervals
     assert kline_inputs
     assert adx_inputs == [regime_klines]
+    assert adx_periods == [14]
     assert kline_inputs[0] == short_klines
+    assert slope_windows == [6, 6]
+    assert atr_periods == [14, 14]
+    assert ema_periods == [50, 50]
 def test_short_klines_limit_accounts_for_cvd_and_atr_windows() -> None:
     assert _short_klines_limit(ema_period=50, slope_window_bars=6, atr_period=14, cvd_window_bars=6) == 61
     assert _short_klines_limit(ema_period=50, slope_window_bars=6, atr_period=14, cvd_window_bars=24) == 61
@@ -677,13 +699,13 @@ async def test_build_snapshot_default_passes_atr_period_14(monkeypatch):
     def _spy_kline_derivatives(
         _klines,
         *,
-        _slope_window_bars: int,
-        _atr_period: int,
-        _ema_period: int,
+        slope_window_bars: int,
+        atr_period: int,
+        ema_period: int,
     ):
-        slope_windows.append(_slope_window_bars)
-        atr_periods.append(_atr_period)
-        ema_periods.append(_ema_period)
+        slope_windows.append(slope_window_bars)
+        atr_periods.append(atr_period)
+        ema_periods.append(ema_period)
         return (0.0, 100.0, 1.0, 0.0)
 
     monkeypatch.setattr("crypto_flow_bot.data.binance._kline_derivatives", _spy_kline_derivatives)
@@ -715,13 +737,13 @@ async def test_build_snapshot_passes_configured_ema_period_200(monkeypatch):
     def _spy_kline_derivatives(
         _klines,
         *,
-        _slope_window_bars: int,
-        _atr_period: int,
-        _ema_period: int,
+        slope_window_bars: int,
+        atr_period: int,
+        ema_period: int,
     ):
-        slope_windows.append(_slope_window_bars)
-        atr_periods.append(_atr_period)
-        ema_periods.append(_ema_period)
+        slope_windows.append(slope_window_bars)
+        atr_periods.append(atr_period)
+        ema_periods.append(ema_period)
         return (0.0, 100.0, 1.0, 0.0)
 
     monkeypatch.setattr("crypto_flow_bot.data.binance._kline_derivatives", _spy_kline_derivatives)
