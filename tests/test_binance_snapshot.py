@@ -7,11 +7,14 @@ hit the network — only the orchestration in `build_snapshot` is exercised.
 
 from __future__ import annotations
 
+from dataclasses import fields
 from datetime import UTC, datetime
+from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
 
+from crypto_flow_bot.config import load_config
 from crypto_flow_bot.data.binance import (
     _kline_derivatives,
     _oi_history_limit,
@@ -19,6 +22,7 @@ from crypto_flow_bot.data.binance import (
     _taker_quote_volumes,
     build_snapshot,
 )
+from crypto_flow_bot.engine.models import Snapshot
 
 # ─── _kline_derivatives ─────────────────────────────────────────────────────
 
@@ -381,7 +385,9 @@ async def test_top_long_short_position_ratio_parses_valid_value():
 
 
 @pytest.mark.asyncio
-async def test_build_snapshot_uses_configured_short_timeframe_15m_and_keeps_4h_request():
+async def test_build_snapshot_dry_run_validates_inactive_15m_example_config():
+    cfg = load_config(Path("configs/config.15m.example.yaml"))
+
     client = AsyncMock()
     client.funding_rate.return_value = 0.0
     client.open_interest_usd.return_value = 1_000_000.0
@@ -393,16 +399,43 @@ async def test_build_snapshot_uses_configured_short_timeframe_15m_and_keeps_4h_r
     liq_stream = AsyncMock()
     liq_stream.totals = lambda _symbol: (0.0, 0.0)
 
-    await build_snapshot(
-        client, liq_stream, "BTCUSDT", oi_window_minutes=60, timeframe_short="15m"
+    snap = await build_snapshot(
+        client,
+        liq_stream,
+        "BTCUSDT",
+        oi_window_minutes=cfg.signals.oi_surge.window_minutes,
+        timeframe_short=cfg.signals.timeframe_short,
+        regime_timeframe=cfg.signals.regime.timeframe,
+        slope_window_bars=cfg.signals.trend_filter.slope_window_bars,
+        slope_window_bars_4h=cfg.signals.trend_filter.slope_window_bars_4h,
+        atr_period=cfg.signals.trend_filter.atr_period,
+        ema_period=cfg.signals.trend_filter.ema_period,
+        cvd_window_bars=cfg.signals.taker_confirmation.cvd_window_bars,
     )
 
+    assert isinstance(snap, Snapshot)
     assert client.klines.await_count == 3
-    intervals = [call.args[1] for call in client.klines.await_args_list]
-    assert intervals[0] == "15m"
-    assert "1h" in intervals
-    assert "4h" in intervals
+    short_call, regime_call, call_4h = client.klines.await_args_list
+    assert short_call.args[1] == "15m"
+    assert short_call.kwargs["limit"] == _short_klines_limit(
+        ema_period=cfg.signals.trend_filter.ema_period,
+        slope_window_bars=cfg.signals.trend_filter.slope_window_bars,
+        atr_period=cfg.signals.trend_filter.atr_period,
+        cvd_window_bars=cfg.signals.taker_confirmation.cvd_window_bars,
+    )
+    assert regime_call.args[1] == "1h"
+    assert regime_call.kwargs["limit"] >= 15
+    assert call_4h.args[1] == "4h"
+    expected_4h_limit = (
+        cfg.signals.trend_filter.ema_period
+        + cfg.signals.trend_filter.slope_window_bars_4h
+        + 5
+    )
+    assert call_4h.kwargs["limit"] == expected_4h_limit
+    assert call_4h.kwargs["limit"] != short_call.kwargs["limit"]
 
+    snapshot_fields = {f.name for f in fields(Snapshot)}
+    assert {"ema50_1h", "atr_1h", "adx_1h", "atr_pct_1h"}.issubset(snapshot_fields)
 
 
 
