@@ -461,7 +461,7 @@ async def build_snapshot(
     ema50_slope_4h: float | None = None
     if klines_4h is not None:
         price_change_pct_4h, ema50_4h, atr_4h, ema50_slope_4h = _kline_derivatives(
-            klines_4h, slope_window_bars=slope_window_bars_4h
+            klines_4h, slope_window_bars=slope_window_bars_4h, atr_period=atr_period
         )
 
     long_liq, short_liq = liq_stream.totals(symbol)

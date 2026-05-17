@@ -619,7 +619,7 @@ async def test_build_snapshot_passes_configured_atr_period_56(monkeypatch):
     await build_snapshot(client, liq_stream, "BTCUSDT", oi_window_minutes=60, atr_period=56)
 
     assert slope_windows == [6, 6]
-    assert atr_periods == [56, 14]
+    assert atr_periods == [56, 56]
 
 
 @pytest.mark.asyncio
