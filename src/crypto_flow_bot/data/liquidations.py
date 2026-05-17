@@ -96,9 +96,20 @@ class _ExchangeStream:
             try:
                 msg = json.loads(raw)
             except json.JSONDecodeError:
+                log.warning("%s liquidation stream received malformed JSON: %r", self.name, raw)
                 continue
-            for ev in self.parse(msg):
-                self._append(ev)
+            try:
+                for ev in self.parse(msg):
+                    self._append(ev)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception(
+                    "%s liquidation stream failed to process message; skipping message: %r",
+                    self.name,
+                    msg,
+                )
+                continue
 
     def parse(self, msg: dict) -> list[_LiqEvent]:
         raise NotImplementedError
@@ -301,9 +312,42 @@ class LiquidationStream:
             log.warning("no liquidation exchanges configured; aggregator is idle")
             await self._stopped.wait()
             return
-        # Each stream runs forever with its own backoff. We just gather and
-        # propagate cancellation cleanly.
+        # Supervise each stream and restart on unexpected fatal failures.
         try:
-            await asyncio.gather(*(s.run() for s in self._streams), return_exceptions=False)
+            await asyncio.gather(*(self._supervise_stream(s) for s in self._streams), return_exceptions=False)
         except asyncio.CancelledError:
             raise
+
+    async def _supervise_stream(self, stream: _ExchangeStream) -> None:
+        max_failures = 5
+        window_seconds = 60.0
+        restart_backoff = 1.0
+        failures: deque[datetime] = deque()
+
+        while not self._stopped.is_set():
+            try:
+                await stream.run()
+                return
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                now = datetime.now(tz=UTC)
+                failures.append(now)
+                cutoff = now - timedelta(seconds=window_seconds)
+                while failures and failures[0] < cutoff:
+                    failures.popleft()
+                if len(failures) > max_failures:
+                    log.error(
+                        "%s liquidation stream exceeded restart limit (%d failures in %.0fs); stopping stream",
+                        stream.name,
+                        max_failures,
+                        window_seconds,
+                    )
+                    return
+                log.exception(
+                    "%s liquidation stream crashed unexpectedly; restarting in %.1fs",
+                    stream.name,
+                    restart_backoff,
+                )
+                await asyncio.sleep(restart_backoff)
+                restart_backoff = min(restart_backoff * 2.0, 10.0)
