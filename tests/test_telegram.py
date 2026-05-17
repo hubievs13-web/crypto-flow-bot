@@ -296,3 +296,68 @@ def test_startup_falls_back_to_pct_when_atr_disabled():
     # When ATR sizing is off, the fixed percent SL is advertised.
     assert "SL 1.50%" in text
     assert "ATR(1h)" not in text
+
+import asyncio  # noqa: E402
+import logging  # noqa: E402
+
+from crypto_flow_bot.notify.telegram import TelegramNotifier, _mask_telegram_token  # noqa: E402
+
+
+class _DummyResponse:
+    def __init__(self, status_code: int = 200) -> None:
+        self.status_code = status_code
+        self.text = "ok"
+
+    def json(self) -> dict[str, object]:
+        return {"result": []}
+
+
+class _DummyHTTP:
+    def __init__(self) -> None:
+        self.last_post_url: str | None = None
+        self.last_get_url: str | None = None
+
+    async def post(self, url: str, json: dict[str, object]) -> _DummyResponse:
+        _ = json
+        self.last_post_url = url
+        return _DummyResponse()
+
+    async def get(self, url: str, params: dict[str, object], timeout: float) -> _DummyResponse:
+        _ = (params, timeout)
+        self.last_get_url = url
+        return _DummyResponse()
+
+
+def test_send_debug_logs_mask_token_and_http_uses_real_token(caplog):
+    token = "123456:ABCDEF"
+    http = _DummyHTTP()
+    notifier = TelegramNotifier(bot_token=token, chat_ids=["42"], http=http)  # type: ignore[arg-type]
+    with caplog.at_level(logging.DEBUG):
+        asyncio.run(notifier.send("hello"))
+
+    logs = "\n".join(caplog.messages)
+    assert token not in logs
+    assert "bot***" in logs
+    assert http.last_post_url == f"https://api.telegram.org/bot{token}/sendMessage"
+
+
+def test_poll_commands_debug_logs_mask_token_and_http_uses_real_token(caplog):
+    token = "123456:ABCDEF"
+    http = _DummyHTTP()
+    notifier = TelegramNotifier(bot_token=token, chat_ids=["42"], http=http)  # type: ignore[arg-type]
+    with caplog.at_level(logging.DEBUG):
+        asyncio.run(notifier.poll_commands(_cfg()))
+
+    logs = "\n".join(caplog.messages)
+    assert token not in logs
+    assert "bot***" in logs
+    assert http.last_get_url == f"https://api.telegram.org/bot{token}/getUpdates"
+
+
+def test_mask_telegram_token_masks_send_and_updates_urls():
+    assert _mask_telegram_token("https://api.telegram.org/bot123456:ABCDEF/sendMessage") == (
+        "https://api.telegram.org/bot***/sendMessage"
+    )
+    assert _mask_telegram_token("https://api.telegram.org/bot999:XYZ/getUpdates") == (
+        "https://api.telegram.org/bot***/getUpdates"
+    )
