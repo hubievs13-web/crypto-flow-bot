@@ -419,15 +419,19 @@ async def test_build_snapshot_uses_separate_short_and_4h_limits_and_slope_window
     liq_stream.totals = lambda _symbol: (0.0, 0.0)
 
     slope_windows: list[int] = []
+    atr_periods: list[int] = []
+    ema_periods: list[int] = []
 
     def _spy_kline_derivatives(
         _klines,
         *,
         slope_window_bars: int,
         atr_period: int,
+        ema_period: int,
     ):
         slope_windows.append(slope_window_bars)
-        assert atr_period == 14
+        atr_periods.append(atr_period)
+        ema_periods.append(ema_period)
         return (0.0, 100.0, 1.0, 0.001)
 
     monkeypatch.setattr("crypto_flow_bot.data.binance._kline_derivatives", _spy_kline_derivatives)
@@ -449,6 +453,8 @@ async def test_build_snapshot_uses_separate_short_and_4h_limits_and_slope_window
     assert call_4h.args[1] == "4h"
     assert call_4h.kwargs["limit"] == 61
     assert slope_windows == [24, 6]
+    assert atr_periods == [14, 14]
+    assert ema_periods == [50, 50]
 
 
 @pytest.mark.asyncio
