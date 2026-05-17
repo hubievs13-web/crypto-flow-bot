@@ -20,6 +20,22 @@ from crypto_flow_bot.engine.signals import SignalCandidate
 
 log = logging.getLogger(__name__)
 
+_FRACTION_INVARIANT_EPS = 1e-9
+
+
+def _validate_position_fraction_invariant(position: Position) -> None:
+    tp_hit_fraction_sum = sum(level.fraction for level in position.tp_levels if level.hit)
+    total_fraction = tp_hit_fraction_sum + position.open_fraction
+    if total_fraction > 1.0 + _FRACTION_INVARIANT_EPS:
+        log.error(
+            "position fraction invariant violated: symbol=%s position_id=%s open_fraction=%.12f tp_hit_fraction_sum=%.12f total=%.12f",
+            position.symbol,
+            position.id,
+            position.open_fraction,
+            tp_hit_fraction_sum,
+            total_fraction,
+        )
+
 
 _REASON_METRIC_KEYS: tuple[str, ...] = (
     "funding_rate",
@@ -320,6 +336,7 @@ class StateStore:
     ) -> None:
         f = fraction if fraction is not None else position.open_fraction
         position.open_fraction = max(0.0, position.open_fraction - f)
+        _validate_position_fraction_invariant(position)
         if position.open_fraction <= 1e-9:
             position.open_fraction = 0.0
             position.closed = True
