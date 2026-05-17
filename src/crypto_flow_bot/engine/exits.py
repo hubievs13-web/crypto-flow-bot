@@ -149,7 +149,7 @@ def evaluate_exit(position: Position, snap: Snapshot, cfg: Config) -> list[ExitE
     if ri.enabled:
         invalidated = False
         why = ""
-        if "funding_extreme" in position.reason and snap.funding_rate is not None:
+        if "funding_extreme" in position.reason_rules and snap.funding_rate is not None:
             entry_f = position.reason_metric_at_entry.get("funding_rate")
             if _metric_retraced_to_neutral(
                 entry_value=entry_f,
@@ -161,7 +161,7 @@ def evaluate_exit(position: Position, snap: Snapshot, cfg: Config) -> list[ExitE
                 why = f"funding {snap.funding_rate * 100:+.3f}% retraced from {entry_f * 100:+.3f}%"
         if (
             not invalidated
-            and "lsr_extreme" in position.reason
+            and "lsr_extreme" in position.reason_rules
             and snap.long_short_ratio is not None
         ):
             entry_lsr = position.reason_metric_at_entry.get("long_short_ratio")
@@ -182,7 +182,7 @@ def evaluate_exit(position: Position, snap: Snapshot, cfg: Config) -> list[ExitE
         # instead of waiting out the time-stop.
         if (
             not invalidated
-            and ("oi_surge" in position.reason or "liq_cascade" in position.reason)
+            and ("oi_surge" in position.reason_rules or "liq_cascade" in position.reason_rules)
             and age <= timedelta(minutes=ri.momentum_window_minutes)
         ):
             adverse_pct = -_favorable_pct(position, price)  # >0 = price moved against us
