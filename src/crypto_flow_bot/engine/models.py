@@ -141,7 +141,14 @@ class Position:
     entry_price: float
     entry_ts: datetime
     reason: str  # which signal opened it
-    reason_metric_at_entry: dict = field(default_factory=dict)
+    # Closed diagnostic whitelist captured at entry-time only. New positions
+    # should include exactly these 15 keys (missing metrics stay None):
+    # funding_rate, funding_rate_zscore, funding_rate_percentile,
+    # predicted_funding_rate, predicted_funding_zscore,
+    # predicted_funding_percentile, long_short_ratio,
+    # open_interest_change_pct_window, taker_buy_dominance_1h,
+    # cvd_window_usd, ema50_slope_1h, ema50_slope_4h, regime, adx_1h, atr_pct_1h.
+    reason_metric_at_entry: ReasonMetricAtEntry = field(default_factory=dict)
     reason_rules: list[str] = field(default_factory=list)
 
     # Risk levels — absolute prices, computed at entry.
@@ -226,3 +233,4 @@ class Alert:
             "payload": self.payload,
             "text": self.text,
         }
+ReasonMetricAtEntry = dict[str, float | str | None]
