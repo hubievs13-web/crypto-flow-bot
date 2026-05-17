@@ -98,6 +98,28 @@ def test_compute_stats_combo_reason_counts_each():
     assert out["lsr_extreme"].open_unresolved == 1
 
 
+def test_compute_stats_ignores_downgrade_names_in_reason():
+    """Legacy records with downgrades in reason (e.g. 'lsr_extreme+trend_4h')
+    must group under the real signal only, not under the downgrade name."""
+    now = datetime(2026, 5, 8, tzinfo=UTC)
+    positions = [{
+        "symbol": "BTCUSDT",
+        "direction": "SHORT",
+        "entry_ts": (now - timedelta(hours=2)).isoformat(),
+        "reason": "lsr_extreme+trend_4h+taker_confirmation",
+        "tp_levels": [{"pct": 0.01, "fraction": 1.0, "hit": True}],
+        "closed": True,
+        "close_reason": "TP_HIT",
+        "close_price": 99.0,
+        "entry_price": 100.0,
+    }]
+    stats = compute_stats(positions, now=now, window_days=7)
+    assert "lsr_extreme" in stats
+    assert "trend_4h" not in stats
+    assert "taker_confirmation" not in stats
+    assert stats["lsr_extreme"].count == 1
+
+
 def test_compute_stats_pnl_long_vs_short_sign():
     now = datetime.now(tz=UTC)
     # LONG: close_price > entry -> positive PnL

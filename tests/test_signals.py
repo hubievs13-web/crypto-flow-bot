@@ -14,6 +14,11 @@ def _cfg(funding_requires_confirmation: bool = True) -> Config:
     )
 
 
+def _base_cfg(**signals_kw) -> Config:
+    signals = SignalsCfg(funding_extreme_requires_confirmation=False, **signals_kw)
+    return Config(symbols=["BTCUSDT"], signals=signals)
+
+
 def _snap(**overrides) -> Snapshot:
     base = {"symbol": "BTCUSDT", "ts": datetime.now(tz=UTC), "price": 50000.0}
     base.update(overrides)
@@ -268,6 +273,57 @@ def test_rules_split_across_directions_not_strong_for_either():
     out = evaluate(snap, _cfg())
     for c in out:
         assert c.is_strong is False
+
+
+def test_downgrades_do_not_leak_into_fired_rules_or_reason():
+    """After P0-1, taker_confirmation / trend_4h / slope_1h / slope_4h
+    must land in `entry_downgrades`, not `fired_rules` or `reason`."""
+    from crypto_flow_bot.config import (
+        LiqCascadeCfg,
+        LsrExtremeCfg,
+        OiSurgeCfg,
+        TakerConfirmationCfg,
+        TrendFilterCfg,
+    )
+    from crypto_flow_bot.engine.models import Direction
+    from crypto_flow_bot.engine.signals import evaluate
+
+    cfg = _base_cfg(
+        taker_confirmation=TakerConfirmationCfg(
+            enabled=True, dominance_threshold=0.55
+        ),
+        trend_filter=TrendFilterCfg(
+            enabled=True,
+            require_4h_alignment=True,
+            hard_block_on_4h=False,
+        ),
+        oi_surge=OiSurgeCfg(enabled=False),
+        liq_cascade=LiqCascadeCfg(enabled=False),
+        lsr_extreme=LsrExtremeCfg(enabled=True),
+    )
+    # LSR triggers SHORT; taker is buy-dominant (bad for SHORT) -> downgrade.
+    # 4h trend is misaligned with SHORT -> trend_4h downgrade.
+    snap = _snap(
+        long_short_ratio=2.7,
+        taker_buy_dominance_1h=0.80,
+        ema50_4h=90.0,  # price 100, 4h ema below -> uptrend; SHORT misaligned
+    )
+    out = evaluate(snap, cfg)
+    assert out, "candidate must survive downgrade-only pass"
+    cand = next(c for c in out if c.direction is Direction.SHORT)
+    fired_names = {r.name for r in cand.fired_rules}
+    dg_names = {d.name for d in cand.entry_downgrades}
+    assert "lsr_extreme" in fired_names
+    assert "taker_confirmation" not in fired_names, \
+        "taker_confirmation must be a downgrade, not a fired rule"
+    assert "trend_4h" not in fired_names, \
+        "trend_4h must be a downgrade, not a fired rule"
+    assert "taker_confirmation" in dg_names
+    assert "trend_4h" in dg_names
+    assert cand.is_strong is False, "downgrades must force is_strong=False"
+    # reason_label is derived from fired_rules only.
+    assert "taker_confirmation" not in cand.reason_label
+    assert "trend_4h" not in cand.reason_label
 
 
 # ─── Per-symbol threshold overrides ────────────────────────────────────────

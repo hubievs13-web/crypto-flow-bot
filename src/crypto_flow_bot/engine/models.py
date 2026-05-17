@@ -162,6 +162,8 @@ class Position:
     # the same direction within the confluence window? Used by the alert
     # formatter (STRONG marker) and stats (per-strength rates).
     strong: bool = False
+    entry_strength: str = "weak"
+    entry_downgrades: list[str] = field(default_factory=list)
 
     # Cross-snapshot signal identifier. Stable for the lifetime of one
     # candidate (alert / block / open / close all share the same id), so
@@ -192,6 +194,8 @@ class Position:
             "close_price": self.close_price,
             "best_favorable_pct": self.best_favorable_pct,
             "strong": self.strong,
+            "entry_strength": self.entry_strength,
+            "entry_downgrades": list(self.entry_downgrades),
             "signal_id": self.signal_id,
             "entry_atr_1h": self.entry_atr_1h,
         }
