@@ -197,6 +197,22 @@ def test_oi_surge_config_has_no_price_alignment_toggle_field():
     assert removed_field not in OiSurgeCfg.model_fields
 
 
+def test_oi_surge_description_uses_configured_short_timeframe_label():
+    cfg = _cfg()
+    cfg.signals.timeframe_short = "15m"
+    snap = _snap(open_interest_change_pct_window=0.07, price_change_pct_1h=-0.012, oi_quality="healthy_long")
+    out = evaluate(snap, cfg)
+    descriptions = [
+        r.description
+        for c in out
+        for r in c.fired_rules
+        if r.name == "oi_surge"
+    ]
+    assert descriptions
+    assert all("/ 15m " in d for d in descriptions)
+    assert all("/ 1h " not in d for d in descriptions)
+
+
 # ─── Trend filter ───────────────────────────────────────────────────────────
 
 def test_trend_filter_blocks_short_when_above_ema():
