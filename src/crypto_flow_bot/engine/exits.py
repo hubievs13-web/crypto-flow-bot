@@ -56,6 +56,16 @@ def _metric_retraced_to_neutral(
     return progress_remaining <= 1.0 - retrace_pct
 
 
+
+
+def _entry_metric_float(position: Position, key: str) -> float | None:
+    value = position.reason_metric_at_entry.get(key)
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int | float):
+        return float(value)
+    return None
+
 def _trailing_stop_price(position: Position, lock_in_pct: float) -> float:
     """Compute the new SL price when trailing is engaged."""
     sign = position.direction.sign
@@ -150,7 +160,7 @@ def evaluate_exit(position: Position, snap: Snapshot, cfg: Config) -> list[ExitE
         invalidated = False
         why = ""
         if "funding_extreme" in position.reason_rules and snap.funding_rate is not None:
-            entry_f = position.reason_metric_at_entry.get("funding_rate")
+            entry_f = _entry_metric_float(position, "funding_rate")
             if _metric_retraced_to_neutral(
                 entry_value=entry_f,
                 current_value=snap.funding_rate,
@@ -164,7 +174,7 @@ def evaluate_exit(position: Position, snap: Snapshot, cfg: Config) -> list[ExitE
             and "lsr_extreme" in position.reason_rules
             and snap.long_short_ratio is not None
         ):
-            entry_lsr = position.reason_metric_at_entry.get("long_short_ratio")
+            entry_lsr = _entry_metric_float(position, "long_short_ratio")
             if _metric_retraced_to_neutral(
                 entry_value=entry_lsr,
                 current_value=snap.long_short_ratio,
