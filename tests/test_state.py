@@ -448,3 +448,51 @@ def test_should_log_skip_zero_interval_always_passes(tmp_path):
     assert s.should_log_skip(
         "BTCUSDT", Direction.LONG, "max_concurrent", interval_seconds=0,
     ) is True
+
+
+def test_close_position_partial_tp_invariant_ok(tmp_path):
+    s = StateStore(path=tmp_path)
+    cfg = _cfg()
+    pos = s.open_from_signal(_candidate(["lsr_extreme"]), cfg)
+    pos.tp_levels[0].hit = True
+    s.close_position(pos, price=101.0, reason="TP_HIT", fraction=pos.tp_levels[0].fraction)
+    tp_hit_fraction_sum = sum(level.fraction for level in pos.tp_levels if level.hit)
+    assert tp_hit_fraction_sum + pos.open_fraction <= 1.0 + 1e-9
+
+
+def test_close_position_full_close_invariant_ok(tmp_path):
+    s = StateStore(path=tmp_path)
+    cfg = _cfg()
+    pos = s.open_from_signal(_candidate(["lsr_extreme"]), cfg)
+    s.close_position(pos, price=99.0, reason="SL_HIT")
+    tp_hit_fraction_sum = sum(level.fraction for level in pos.tp_levels if level.hit)
+    assert tp_hit_fraction_sum + pos.open_fraction <= 1.0 + 1e-9
+
+
+def test_close_position_logs_on_fraction_invariant_violation(tmp_path, caplog):
+    s = StateStore(path=tmp_path)
+    cfg = _cfg()
+    pos = s.open_from_signal(_candidate(["lsr_extreme"]), cfg)
+    pos.tp_levels[0].hit = True
+    pos.tp_levels[0].fraction = 0.8
+    pos.tp_levels[1].hit = True
+    pos.tp_levels[1].fraction = 0.3
+    with caplog.at_level("ERROR"):
+        s.close_position(pos, price=101.0, reason="TP_HIT", fraction=0.0)
+    assert "position fraction invariant violated" in caplog.text
+    assert "symbol=BTCUSDT" in caplog.text
+    assert f"position_id={pos.id}" in caplog.text
+
+
+def test_close_position_allows_tiny_float_noise_within_eps(tmp_path, caplog):
+    s = StateStore(path=tmp_path)
+    cfg = _cfg()
+    pos = s.open_from_signal(_candidate(["lsr_extreme"]), cfg)
+    pos.tp_levels[0].hit = True
+    pos.tp_levels[0].fraction = 0.6
+    pos.tp_levels[1].hit = True
+    pos.tp_levels[1].fraction = 0.4
+    pos.open_fraction = 5e-10
+    with caplog.at_level("ERROR"):
+        s.close_position(pos, price=101.0, reason="TP_HIT", fraction=0.0)
+    assert "position fraction invariant violated" not in caplog.text
