@@ -377,3 +377,46 @@ async def test_top_long_short_position_ratio_parses_valid_value():
     client = BinanceClient()
     client._get = AsyncMock(return_value=[{"longShortRatio": "1.234"}])  # type: ignore[method-assign]
     assert await client.top_long_short_position_ratio("BTCUSDT") == 1.234
+
+
+@pytest.mark.asyncio
+async def test_build_snapshot_uses_configured_short_timeframe_15m_and_keeps_4h_request():
+    client = AsyncMock()
+    client.funding_rate.return_value = 0.0
+    client.open_interest_usd.return_value = 1_000_000.0
+    client.top_long_short_position_ratio.return_value = 1.0
+    client.latest_price.return_value = 100.0
+    client.open_interest_history.return_value = []
+    client.klines = AsyncMock(return_value=_trending_klines())
+
+    liq_stream = AsyncMock()
+    liq_stream.totals = lambda _symbol: (0.0, 0.0)
+
+    await build_snapshot(
+        client, liq_stream, "BTCUSDT", oi_window_minutes=60, timeframe_short="15m"
+    )
+
+    assert client.klines.await_count == 2
+    intervals = [call.args[1] for call in client.klines.await_args_list]
+    assert intervals[0] == "15m"
+    assert intervals[1] == "4h"
+
+
+@pytest.mark.asyncio
+async def test_build_snapshot_default_mode_keeps_indicator_inputs_unchanged():
+    client = AsyncMock()
+    client.funding_rate.return_value = 0.0
+    client.open_interest_usd.return_value = 1_000_000.0
+    client.top_long_short_position_ratio.return_value = 1.0
+    client.latest_price.return_value = 100.0
+    client.open_interest_history.return_value = []
+    client.klines = AsyncMock(return_value=_trending_klines())
+
+    liq_stream = AsyncMock()
+    liq_stream.totals = lambda _symbol: (0.0, 0.0)
+
+    await build_snapshot(client, liq_stream, "BTCUSDT", oi_window_minutes=60)
+
+    first_call = client.klines.await_args_list[0]
+    assert first_call.args[1] == "1h"
+    assert first_call.kwargs["limit"] == 61

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Literal
 
 import yaml
 from pydantic import BaseModel, Field, field_validator
@@ -194,6 +195,7 @@ class SymbolOverridesCfg(BaseModel):
 
 
 class SignalsCfg(BaseModel):
+    timeframe_short: Literal["1h", "15m"] = "1h"
     funding_extreme: FundingExtremeCfg = Field(default_factory=FundingExtremeCfg)
     oi_surge: OiSurgeCfg = Field(default_factory=OiSurgeCfg)
     lsr_extreme: LsrExtremeCfg = Field(default_factory=LsrExtremeCfg)
@@ -242,6 +244,7 @@ class SignalsCfg(BaseModel):
             freshness=self.freshness,
             predicted_funding=self.predicted_funding,
             regime=self.regime,
+            timeframe_short=self.timeframe_short,
             confluence_window_minutes=self.confluence_window_minutes,
             funding_extreme_requires_confirmation=self.funding_extreme_requires_confirmation,
             per_symbol=self.per_symbol,

@@ -26,6 +26,8 @@ alert_cooldown_seconds: 7200  # 2h
 # (any of them is enough). The signal engine reports which rule(s) fired.
 
 signals:
+  timeframe_short: "1h"
+
   # Cross-snapshot confluence window. The signal engine remembers which rules
   # fired in each direction for the last X minutes (per symbol). Two effects:
   #   1. STRONG-marker uses this rolling set, not a single snapshot, so a

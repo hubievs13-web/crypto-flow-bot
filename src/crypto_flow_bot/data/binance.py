@@ -369,6 +369,7 @@ async def build_snapshot(
     slope_window_bars: int = 6,
     cvd_window_bars: int = 6,
     oi_quality_epsilon_pct: float = 0.0005,
+    timeframe_short: str = "1h",
     *,
     enable_4h_klines: bool = True,
     predicted_funding_cap: float = 0.0075,
@@ -402,7 +403,7 @@ async def build_snapshot(
     # bar so that _kline_derivatives can compute the EMA slope. Default 51 only
     # produced 50 closed bars -> EMA50 series of length 1 -> slope was always None.
     klines_limit = ema_period + slope_window_bars + 5
-    klines_1h = await client.klines(symbol, "1h", limit=klines_limit)
+    klines_1h = await client.klines(symbol, timeframe_short, limit=klines_limit)
     klines_1h_ts = datetime.now(tz=UTC)
     premium_idx = await client.premium_index(symbol)
     # 4h is fetched separately so the typed unpacking above stays stable
