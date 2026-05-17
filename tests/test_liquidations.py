@@ -180,6 +180,57 @@ def test_evicts_events_older_than_window():
     assert long_liq == pytest.approx(10.0)
 
 
+def test_events_buffer_is_bounded_and_drops_oldest():
+    stream = LiquidationStream(window_minutes=1, exchanges=["binance"])
+
+    for i in range(stream._events_maxlen + 250):
+        stream._append(
+            _LiqEvent(
+                symbol="BTCUSDT",
+                liquidated_side="LONG",
+                notional_usd=float(i),
+                ts=_now(),
+                exchange="binance",
+            )
+        )
+
+    assert len(stream._events) == stream._events_maxlen
+    assert stream._dropped_events == 250
+    assert stream._events[0].notional_usd == pytest.approx(250.0)
+
+
+def test_recent_totals_remain_correct_after_buffer_drops():
+    stream = LiquidationStream(window_minutes=1, exchanges=["binance"])
+
+    # Fill the buffer with old-in-sequence events, then add a recent block that
+    # should remain fully represented after bounded deque eviction.
+    for _ in range(stream._events_maxlen - 10):
+        stream._append(
+            _LiqEvent(
+                symbol="BTCUSDT",
+                liquidated_side="LONG",
+                notional_usd=1.0,
+                ts=_now(),
+                exchange="binance",
+            )
+        )
+
+    for _ in range(20):
+        stream._append(
+            _LiqEvent(
+                symbol="BTCUSDT",
+                liquidated_side="SHORT",
+                notional_usd=2.0,
+                ts=_now(),
+                exchange="binance",
+            )
+        )
+
+    long_liq, short_liq = stream.totals("BTCUSDT")
+    assert long_liq == pytest.approx(float(stream._events_maxlen - 20))
+    assert short_liq == pytest.approx(40.0)
+
+
 def _now():
     from datetime import UTC, datetime
     return datetime.now(tz=UTC)

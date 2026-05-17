@@ -214,6 +214,9 @@ _AVAILABLE_STREAMS: dict[str, type[_ExchangeStream]] = {
 
 
 class LiquidationStream:
+    _EVENTS_PER_SECOND_ESTIMATE = 5
+    _EVENT_BUFFER_SAFETY_FACTOR = 10
+
     """Aggregates liquidations across multiple exchanges into one rolling window.
 
     Public surface (`start`, `stop`, `totals`) is unchanged from the prior
@@ -234,7 +237,12 @@ class LiquidationStream:
         symbols: list[str] | None = None,
     ) -> None:
         self.window = timedelta(minutes=window_minutes)
-        self._events: deque[_LiqEvent] = deque()
+        self._events_maxlen = max(
+            1,
+            window_minutes * self._EVENTS_PER_SECOND_ESTIMATE * 60 * self._EVENT_BUFFER_SAFETY_FACTOR,
+        )
+        self._events: deque[_LiqEvent] = deque(maxlen=self._events_maxlen)
+        self._dropped_events = 0
         self._stopped = asyncio.Event()
         self._task: asyncio.Task | None = None
         ex_list = exchanges or ["binance"]
@@ -297,6 +305,8 @@ class LiquidationStream:
     # ---------- internals ----------
 
     def _append(self, ev: _LiqEvent) -> None:
+        if len(self._events) == self._events.maxlen:
+            self._dropped_events += 1
         self._events.append(ev)
         # opportunistic eviction so the deque doesn't grow unbounded between
         # reads from the (slow) signal-eval loop
