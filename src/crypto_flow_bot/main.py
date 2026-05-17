@@ -212,7 +212,7 @@ class Bot:
                 self._last_full_snapshot[symbol] = snap
                 await self._safe_log_write(
                     "write_snapshot",
-                    lambda: self.logger.write_snapshot(snap),
+                    lambda snap=snap: self.logger.write_snapshot(snap),
                     symbol=symbol,
                 )
                 await self._handle_entry_signals(snap)
@@ -289,7 +289,7 @@ class Bot:
                 self._last_full_snapshot[symbol] = snap
                 await self._safe_log_write(
                     "write_snapshot",
-                    lambda: self.logger.write_snapshot(snap),
+                    lambda snap=snap: self.logger.write_snapshot(snap),
                     symbol=symbol,
                 )
                 await self._handle_entry_signals(snap)
@@ -524,14 +524,14 @@ class Bot:
             for c in candidates:
                 await self._safe_log_write(
                     "write_blocked",
-                    lambda: self.logger.write_blocked(
-                    signal_id=c.signal_id,
-                    symbol=c.symbol,
-                    direction=c.direction,
-                    blocked_reason="conflicting_signals",
-                    fired_rules=[r.name for r in c.fired_rules],
-                    confluence_window_rules=list(c.confluence_window_rules),
-                    snapshot_ts=snap.ts,
+                    lambda c=c, snap=snap: self.logger.write_blocked(
+                        signal_id=c.signal_id,
+                        symbol=c.symbol,
+                        direction=c.direction,
+                        blocked_reason="conflicting_signals",
+                        fired_rules=[r.name for r in c.fired_rules],
+                        confluence_window_rules=list(c.confluence_window_rules),
+                        snapshot_ts=snap.ts,
                     ),
                     symbol=c.symbol,
                     signal_id=c.signal_id,
@@ -543,14 +543,14 @@ class Bot:
                 self._maybe_log_skip(candidate, blocked_reason)
                 await self._safe_log_write(
                     "write_blocked",
-                    lambda: self.logger.write_blocked(
-                    signal_id=candidate.signal_id,
-                    symbol=candidate.symbol,
-                    direction=candidate.direction,
-                    blocked_reason=blocked_reason,
-                    fired_rules=[r.name for r in candidate.fired_rules],
-                    confluence_window_rules=list(candidate.confluence_window_rules),
-                    snapshot_ts=snap.ts,
+                    lambda candidate=candidate, blocked_reason=blocked_reason, snap=snap: self.logger.write_blocked(
+                        signal_id=candidate.signal_id,
+                        symbol=candidate.symbol,
+                        direction=candidate.direction,
+                        blocked_reason=blocked_reason,
+                        fired_rules=[r.name for r in candidate.fired_rules],
+                        confluence_window_rules=list(candidate.confluence_window_rules),
+                        snapshot_ts=snap.ts,
                     ),
                     symbol=candidate.symbol,
                     signal_id=candidate.signal_id,
@@ -560,7 +560,7 @@ class Bot:
             alert = format_entry_alert(candidate, position, self.cfg)
             wrote_pos = await self._safe_log_write(
                 "write_position",
-                lambda: self.logger.write_position(position),
+                lambda position=position: self.logger.write_position(position),
                 symbol=position.symbol,
                 position_id=position.id,
             )
@@ -580,7 +580,7 @@ class Bot:
                 )
                 await self._safe_log_write(
                     "write_alert",
-                    lambda: self.logger.write_alert(alert),
+                    lambda alert=alert: self.logger.write_alert(alert),
                     symbol=candidate.symbol,
                     signal_id=candidate.signal_id,
                     send_status="failed_to_send",
@@ -588,7 +588,7 @@ class Bot:
                 continue
             await self._safe_log_write(
                 "write_alert",
-                lambda: self.logger.write_alert(alert),
+                lambda alert=alert: self.logger.write_alert(alert),
                 symbol=candidate.symbol,
                 signal_id=candidate.signal_id,
                 send_status="sent",
@@ -665,6 +665,13 @@ class Bot:
 
     async def _handle_exit_event(self, position, ev, price: float) -> None:  # type: ignore[no-untyped-def]
         cfg = self.cfg
+        pre_open_fraction = position.open_fraction
+        pre_stop_loss_price = position.stop_loss_price
+        pre_closed = position.closed
+        pre_close_ts = position.close_ts
+        pre_close_reason = position.close_reason
+        pre_close_price = position.close_price
+        pre_last_close_ts = self.state.last_close_ts.get((position.symbol, position.direction))
         if ev.kind == "TRAILING_MOVE":
             if ev.new_stop_loss_price is not None:
                 position.stop_loss_price = ev.new_stop_loss_price
@@ -679,6 +686,17 @@ class Bot:
             event=ev.kind,
         )
         if not wrote_pos:
+            position.open_fraction = pre_open_fraction
+            position.stop_loss_price = pre_stop_loss_price
+            position.closed = pre_closed
+            position.close_ts = pre_close_ts
+            position.close_reason = pre_close_reason
+            position.close_price = pre_close_price
+            key = (position.symbol, position.direction)
+            if pre_last_close_ts is None:
+                self.state.last_close_ts.pop(key, None)
+            else:
+                self.state.last_close_ts[key] = pre_last_close_ts
             log.warning(
                 "skip telegram EXIT send because position write failed for %s position_id=%s event=%s",
                 position.symbol, position.id, ev.kind,
