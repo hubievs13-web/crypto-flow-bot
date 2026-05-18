@@ -316,7 +316,12 @@ class Bot:
                     log.warning("price for %s failed: %s", pos.symbol, e)
                     continue
                 snap = self._build_exit_snapshot(pos.symbol, price)
-                events = evaluate_exit(pos, snap, self.cfg)
+                events = evaluate_exit(
+                    pos,
+                    snap,
+                    self.cfg,
+                    has_opposite_signal=self._has_valid_opposite_signal(pos, snap),
+                )
                 for ev in events:
                     await self._handle_exit_event(pos, ev, price)
             self.state.save()
@@ -347,7 +352,18 @@ class Bot:
             price_change_pct_1h=last.price_change_pct_1h,
             ema50_1h=last.ema50_1h,
             atr_1h=last.atr_1h,
+            regime_ema=last.regime_ema,
+            regime_slope=last.regime_slope,
+            regime=last.regime,
         )
+
+
+    def _has_valid_opposite_signal(self, position, snap: Snapshot) -> bool:  # type: ignore[no-untyped-def]
+        candidates = evaluate(snap, self.cfg, cache=self.confluence_cache)
+        candidate_dirs = {c.direction for c in candidates}
+        if len(candidate_dirs) >= 2:
+            return False
+        return any(c.direction is position.direction.opposite for c in candidates)
 
     async def _heartbeat_loop(self) -> None:
         """Two heartbeat tracks:

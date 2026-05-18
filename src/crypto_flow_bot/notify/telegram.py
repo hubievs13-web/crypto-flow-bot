@@ -204,6 +204,10 @@ def format_exit_alert(position: Position, ev: ExitEvent, snap_price: float, cfg:
             head = f"❎ Reason invalidated on {side} {sym} — close at break-even"
     elif ev.kind == "TRAILING_MOVE":
         head = f"🟦 Trailing move on {side} {sym}"
+    elif ev.kind == "EXIT_REGIME_INVALIDATED":
+        head = f"🚫 Regime invalidated on {side} {sym} — close all"
+    elif ev.kind == "EXIT_OPPOSITE_SIGNAL":
+        head = f"↔️ Opposite signal on {side} {sym} — close all"
     else:
         head = f"ℹ️ {ev.kind} on {side} {sym}"
 
