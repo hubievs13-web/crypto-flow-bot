@@ -11,6 +11,13 @@ def test_default_config_yaml_migrates_to_15m_defaults() -> None:
     assert cfg.signals.taker_confirmation.cvd_window_bars == 24
     assert cfg.signals.trend_filter.atr_period == 56
     assert cfg.signals.regime.timeframe == "15m"
+    assert cfg.signals.oi_surge.window_minutes == 15
+    assert cfg.signals.taker_confirmation.bullish_threshold == 0.55
+    assert cfg.signals.taker_confirmation.bearish_threshold == 0.45
+    assert cfg.signals.confluence_window_minutes == 15
+    assert cfg.exits.reason_invalidation.momentum_window_minutes == 15
+    assert cfg.exits.time_stop_minutes == 120
+    assert cfg.alert_cooldown_seconds == 1800
 
 
 def test_15m_example_config_parses_and_matches_future_values() -> None:
