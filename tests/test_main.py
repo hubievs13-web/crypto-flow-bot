@@ -10,7 +10,7 @@ from crypto_flow_bot.engine.exits import ExitEvent
 from crypto_flow_bot.engine.models import Direction, Snapshot
 from crypto_flow_bot.engine.signals import FiredRule, SignalCandidate
 from crypto_flow_bot.engine.state import StateStore
-from crypto_flow_bot.main import Bot
+from crypto_flow_bot.main import Bot, DecisionSummary
 
 
 def _bot(tmp_path) -> Bot:
@@ -26,6 +26,7 @@ def _bot(tmp_path) -> Bot:
     cast(Any, bot.logger).write_blocked = AsyncMock()
     bot._entry_lock = asyncio.Lock()
     bot.confluence_cache = cast(Any, None)
+    bot._decision_summary = DecisionSummary()
     return bot
 
 
@@ -122,3 +123,38 @@ def test_exit_write_position_failure_rolls_back_trailing_move(tmp_path):
         cast(Any, bot.notifier).send.assert_not_awaited()
         assert pos.stop_loss_price == old_sl
     asyncio.run(_run())
+
+
+def test_decision_summary_counts_blocks_accepts_and_exits(tmp_path):
+    async def _run() -> None:
+        bot = _bot(tmp_path)
+        bot._decision_summary = DecisionSummary()
+        cand = _candidate()
+        with patch("crypto_flow_bot.main.evaluate", return_value=[cand]):
+            await bot._handle_entry_signals_locked(cand.snapshot)
+        assert bot._decision_summary.total_candidates == 1
+        assert bot._decision_summary.long_candidates == 1
+        assert bot._decision_summary.accepted_signals == 1
+
+        cand2 = _candidate()
+        bot.state.mark_alerted("BTCUSDT", Direction.LONG)
+        with patch("crypto_flow_bot.main.evaluate", return_value=[cand2]):
+            await bot._handle_entry_signals_locked(cand2.snapshot)
+        assert bot._decision_summary.rejected_or_blocked >= 1
+        assert bot._decision_summary.blocked_counts_by_reason.get("cooldown", 0) >= 1
+
+        pos = bot.state.open_positions()[0]
+        await bot._handle_exit_event(pos, ExitEvent(kind="EXIT_REGIME_INVALIDATED", fraction_closed=1.0, description="x"), 99.0)
+        assert bot._decision_summary.exit_counts_by_reason.get("exit_regime_invalidated", 0) == 1
+
+    asyncio.run(_run())
+
+
+def test_collect_data_health_counts_missing_and_stale(tmp_path):
+    bot = _bot(tmp_path)
+    bot._decision_summary = DecisionSummary()
+    now = datetime.now(tz=UTC)
+    snap = Snapshot(symbol="BTCUSDT", ts=now, price=100.0, funding_rate_ts=now.replace(year=now.year-1))
+    bot._collect_data_health(snap)
+    assert bot._decision_summary.missing_data_counts_by_reason.get("missing_regime_ema", 0) == 1
+    assert bot._decision_summary.stale_data_counts_by_reason.get("stale_funding", 0) == 1

@@ -8,7 +8,7 @@ from crypto_flow_bot.config import (
     SignalsCfg,
     SymbolOverridesCfg,
 )
-from crypto_flow_bot.notify.telegram import format_greeting, format_startup
+from crypto_flow_bot.notify.telegram import format_greeting, format_heartbeat, format_startup
 
 
 def _cfg() -> Config:
@@ -389,3 +389,23 @@ def test_exit_alert_labels_use_regime_neutral_wording(tmp_path, monkeypatch):
     alert = format_exit_alert(pos, ExitEvent(kind="EXIT_REGIME_INVALIDATED", fraction_closed=1.0, description="regime broke"), 99.0, cfg)
     assert "Regime invalidated" in alert.text
     assert "4h" not in alert.text and "1h" not in alert.text
+
+
+def test_format_heartbeat_includes_compact_15m_summary_and_top_n_more():
+    class _Summary:
+        total_candidates = 18
+        accepted_signals = 2
+        rejected_or_blocked = 16
+        long_candidates = 9
+        short_candidates = 9
+        blocked_counts_by_reason = {f"r{i}": i for i in range(1, 8)}
+        downgrade_counts_by_reason = {"taker_confirmation": 4}
+        exit_counts_by_reason = {"exit_regime_invalidated": 1, "exit_time_stop": 1}
+        missing_data_counts_by_reason = {"missing_klines_15m": 1}
+        stale_data_counts_by_reason = {"stale_funding": 1}
+
+    alert = format_heartbeat(1, ["BTCUSDT"], _Summary())
+    assert "15m decision summary" in alert.text
+    assert "candidates: 18 | accepted: 2 | blocked: 16" in alert.text
+    assert "+2 more" in alert.text
+    assert "1h decision" not in alert.text and "4h decision" not in alert.text

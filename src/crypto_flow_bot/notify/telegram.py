@@ -232,12 +232,35 @@ def format_exit_alert(position: Position, ev: ExitEvent, snap_price: float, cfg:
     )
 
 
-def format_heartbeat(open_count: int, watched: list[str]) -> Alert:
+def _format_top_reasons(reasons: dict[str, int], top_n: int = 5) -> str:
+    if not reasons:
+        return "none"
+    ordered = sorted(reasons.items(), key=lambda kv: (-kv[1], kv[0]))
+    shown = ordered[:top_n]
+    base = ", ".join(f"{k}={v}" for k, v in shown)
+    hidden = len(ordered) - len(shown)
+    return f"{base}, +{hidden} more" if hidden > 0 else base
+
+
+def format_heartbeat(open_count: int, watched: list[str], decision_summary=None) -> Alert:
+    decision_summary = decision_summary or {}
     text = (
         "🟢 <b>crypto-flow-bot heartbeat</b>\n"
         f"  Watching: {', '.join(watched)}\n"
         f"  Open virtual positions: {open_count}"
     )
+    if hasattr(decision_summary, "total_candidates"):
+        total = decision_summary.total_candidates
+        text += (
+            "\n\n<b>15m decision summary:</b>"
+            f"\n  candidates: {total} | accepted: {decision_summary.accepted_signals} | blocked: {decision_summary.rejected_or_blocked}"
+            f"\n  sides: long {decision_summary.long_candidates} / short {decision_summary.short_candidates}"
+            f"\n  top blocks: {_format_top_reasons(decision_summary.blocked_counts_by_reason)}"
+            f"\n  downgrades: {_format_top_reasons(decision_summary.downgrade_counts_by_reason)}"
+            f"\n  exits: {_format_top_reasons(decision_summary.exit_counts_by_reason)}"
+            f"\n  data missing: {_format_top_reasons(decision_summary.missing_data_counts_by_reason)}"
+            f"\n  data stale: {_format_top_reasons(decision_summary.stale_data_counts_by_reason)}"
+        )
     return Alert(kind="HEARTBEAT", symbol="*", ts=utcnow(), text=text)
 
 

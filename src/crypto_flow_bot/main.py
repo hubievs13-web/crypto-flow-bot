@@ -7,6 +7,7 @@ import contextlib
 import logging
 import os
 import signal
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
 import httpx
@@ -38,6 +39,40 @@ from crypto_flow_bot.notify.telegram import (
 )
 
 log = logging.getLogger(__name__)
+
+
+@dataclass
+class DecisionSummary:
+    total_candidates: int = 0
+    long_candidates: int = 0
+    short_candidates: int = 0
+    accepted_signals: int = 0
+    rejected_or_blocked: int = 0
+    downgrade_counts_by_reason: dict[str, int] = field(default_factory=dict)
+    blocked_counts_by_reason: dict[str, int] = field(default_factory=dict)
+    exit_counts_by_reason: dict[str, int] = field(default_factory=dict)
+    missing_data_counts_by_reason: dict[str, int] = field(default_factory=dict)
+    stale_data_counts_by_reason: dict[str, int] = field(default_factory=dict)
+
+    def _inc(self, bucket: dict[str, int], key: str) -> None:
+        bucket[key] = bucket.get(key, 0) + 1
+
+    def count_downgrade(self, reason: str) -> None:
+        self._inc(self.downgrade_counts_by_reason, reason)
+
+    def count_blocked(self, reason: str) -> None:
+        self._inc(self.blocked_counts_by_reason, reason)
+        self.rejected_or_blocked += 1
+
+    def count_missing(self, reason: str) -> None:
+        self._inc(self.missing_data_counts_by_reason, reason)
+
+    def count_stale(self, reason: str) -> None:
+        self._inc(self.stale_data_counts_by_reason, reason)
+
+    def count_exit(self, reason: str) -> None:
+        self._inc(self.exit_counts_by_reason, reason)
+
 
 
 def _setup_logging() -> None:
@@ -126,6 +161,7 @@ class Bot:
         # is a pre-settlement forecast and the two series have different
         # statistics. Sized for ~16h of headroom at the 60s default cadence.
         self.predicted_funding_history = FundingHistoryCache(max_points=1000)
+        self._decision_summary = DecisionSummary()
 
     def request_stop(self) -> None:
         self._stop.set()
@@ -386,12 +422,13 @@ class Bot:
                 and now.hour >= liveness_hour
                 and self.state.last_liveness_ping_date != today_key
             ):
-                hb = format_heartbeat(len(self.state.open_positions()), self.cfg.symbols)
+                hb = format_heartbeat(len(self.state.open_positions()), self.cfg.symbols, self._decision_summary)
                 await self.notifier.send(hb.text)
                 await self.logger.write_alert(hb)
                 self._last_heartbeat = now
                 self.state.last_liveness_ping_date = today_key
                 self.state.save()
+                self._decision_summary = DecisionSummary()
                 continue
 
             # Chatty periodic heartbeat (only when not silent).
@@ -399,9 +436,20 @@ class Bot:
                 continue
             if now - self._last_heartbeat >= timedelta(minutes=self.cfg.notifier.heartbeat_minutes):
                 self._last_heartbeat = now
-                hb = format_heartbeat(len(self.state.open_positions()), self.cfg.symbols)
+                hb = format_heartbeat(len(self.state.open_positions()), self.cfg.symbols, self._decision_summary)
                 await self.notifier.send(hb.text)
                 await self.logger.write_alert(hb)
+                self._decision_summary = DecisionSummary()
+
+    def _collect_data_health(self, snap: Snapshot) -> None:
+        missing = {"missing_klines_15m": snap.klines_1h_ts is None, "missing_regime_ema": snap.regime_ema is None, "missing_regime_slope": snap.regime_slope is None, "missing_atr": snap.atr_1h is None, "missing_taker": snap.taker_buy_dominance_1h is None, "missing_cvd": snap.cvd_window_usd is None, "missing_oi": snap.open_interest_ts is None}
+        for k, v in missing.items():
+            if v:
+                self._decision_summary.count_missing(k)
+        stale = {"stale_klines_15m": snap.klines_1h_ts, "stale_funding": snap.funding_rate_ts, "stale_taker": snap.klines_1h_ts, "stale_cvd": snap.klines_1h_ts, "stale_oi": snap.open_interest_ts}
+        for k, ts in stale.items():
+            if ts is not None and (snap.ts - ts).total_seconds() > 1800:
+                self._decision_summary.count_stale(k)
 
     async def _commands_loop(self) -> None:
         while not self._stop.is_set():
@@ -530,7 +578,16 @@ class Bot:
             await self._handle_entry_signals_locked(snap)
 
     async def _handle_entry_signals_locked(self, snap: Snapshot) -> None:
+        if not hasattr(self, "_decision_summary"):
+            self._decision_summary = DecisionSummary()
         candidates = evaluate(snap, self.cfg, cache=self.confluence_cache)
+        self._decision_summary.total_candidates += len(candidates)
+        self._decision_summary.long_candidates += sum(1 for c in candidates if c.direction is Direction.LONG)
+        self._decision_summary.short_candidates += sum(1 for c in candidates if c.direction is Direction.SHORT)
+        for c in candidates:
+            for d in c.entry_downgrades:
+                self._decision_summary.count_downgrade(d.name)
+        self._collect_data_health(snap)
         # Conflict policy: if rules fired in *both* directions on the same
         # snapshot, skip the whole symbol this tick. The OR-logic means the
         # market is sending mixed signals and the previous "open LONG first,
@@ -546,6 +603,7 @@ class Bot:
                 ),
             )
             for c in candidates:
+                self._decision_summary.count_blocked("conflicting_signals")
                 await self._safe_log_write(
                     "write_blocked",
                     lambda c=c, snap=snap: self.logger.write_blocked(
@@ -564,6 +622,7 @@ class Bot:
         for candidate in candidates:
             blocked_reason = self._entry_blocked_reason(candidate)
             if blocked_reason is not None:
+                self._decision_summary.count_blocked(blocked_reason)
                 self._maybe_log_skip(candidate, blocked_reason)
                 await self._safe_log_write(
                     "write_blocked",
@@ -581,6 +640,7 @@ class Bot:
                 )
                 continue
             position = self.state.open_from_signal(candidate, self.cfg)
+            self._decision_summary.accepted_signals += 1
             alert = format_entry_alert(candidate, position, self.cfg)
             wrote_pos = await self._safe_log_write(
                 "write_position",
@@ -688,6 +748,11 @@ class Bot:
             )
 
     async def _handle_exit_event(self, position, ev, price: float) -> None:  # type: ignore[no-untyped-def]
+        if not hasattr(self, "_decision_summary"):
+            self._decision_summary = DecisionSummary()
+        exit_map = {"EXIT_REGIME_INVALIDATED": "exit_regime_invalidated", "EXIT_OPPOSITE_SIGNAL": "exit_opposite_signal", "SL_HIT": "exit_stop_loss", "TP_HIT": "exit_take_profit", "TRAILING_MOVE": "exit_trailing", "TIME_STOP": "exit_time_stop", "REASON_INVALIDATED": "exit_reason_invalidated"}
+        if ev.kind in exit_map:
+            self._decision_summary.count_exit(exit_map[ev.kind])
         cfg = self.cfg
         pre_open_fraction = position.open_fraction
         pre_stop_loss_price = position.stop_loss_price
