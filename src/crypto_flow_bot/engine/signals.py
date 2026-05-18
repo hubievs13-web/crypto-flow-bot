@@ -583,19 +583,19 @@ def evaluate(
             kept.append(cand)
             continue
         drop = False
-        if cand.snapshot.ema50_1h is not None:
+        if cand.snapshot.regime_ema is not None:
             miss = (
-                cand.direction is Direction.LONG and cand.snapshot.price <= cand.snapshot.ema50_1h
+                cand.direction is Direction.LONG and cand.snapshot.price <= cand.snapshot.regime_ema
             ) or (
-                cand.direction is Direction.SHORT and cand.snapshot.price >= cand.snapshot.ema50_1h
+                cand.direction is Direction.SHORT and cand.snapshot.price >= cand.snapshot.regime_ema
             )
             if miss:
                 cand.strong_override = False
                 cand.entry_downgrades.append(FiredRule(name="trend_regime", description="trend_regime n/a"))
                 if tf.hard_block_on_4h:
                     drop = True
-        if cand.snapshot.ema50_slope_1h is not None:
-            s1 = cand.snapshot.ema50_slope_1h
+        if cand.snapshot.regime_slope is not None:
+            s1 = cand.snapshot.regime_slope
             if abs(s1) >= tf.slope_min_abs:
                 miss = (cand.direction is Direction.LONG and s1 <= 0) or (
                     cand.direction is Direction.SHORT and s1 >= 0

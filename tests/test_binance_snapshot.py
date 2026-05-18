@@ -483,9 +483,9 @@ async def test_build_snapshot_uses_separate_short_and_4h_limits_and_slope_window
     short_call = client.klines.await_args_list[0]
     assert short_call.args[1] == "15m"
     assert short_call.kwargs["limit"] == 229
-    assert slope_windows == [24]
-    assert atr_periods == [56]
-    assert ema_periods == [200]
+    assert slope_windows == [24, 24]
+    assert atr_periods == [56, 56]
+    assert ema_periods == [200, 200]
 
 
 @pytest.mark.anyio
@@ -645,9 +645,9 @@ async def test_build_snapshot_splits_short_and_regime_klines_when_timeframes_dif
     assert adx_inputs == [regime_klines]
     assert adx_periods == [14]
     assert kline_inputs[0] == short_klines
-    assert slope_windows == [24]
-    assert atr_periods == [56]
-    assert ema_periods == [200]
+    assert slope_windows == [24, 24]
+    assert atr_periods == [56, 56]
+    assert ema_periods == [200, 200]
 def test_short_klines_limit_accounts_for_cvd_and_atr_windows() -> None:
     assert _short_klines_limit(ema_period=50, slope_window_bars=6, atr_period=14, cvd_window_bars=6) == 61
     assert _short_klines_limit(ema_period=50, slope_window_bars=6, atr_period=14, cvd_window_bars=24) == 61
@@ -741,9 +741,9 @@ async def test_build_snapshot_default_passes_atr_period_56(monkeypatch):
 
     await build_snapshot(client, liq_stream, "BTCUSDT", oi_window_minutes=60)
 
-    assert slope_windows == [24]
-    assert atr_periods == [56]
-    assert ema_periods == [200]
+    assert slope_windows == [24, 24]
+    assert atr_periods == [56, 56]
+    assert ema_periods == [200, 200]
 
 
 @pytest.mark.anyio
@@ -788,9 +788,9 @@ async def test_build_snapshot_passes_configured_ema_period_200(monkeypatch):
         slope_window_bars_4h=13,
     )
 
-    assert slope_windows == [8]
-    assert atr_periods == [56]
-    assert ema_periods == [200]
+    assert slope_windows == [8, 8]
+    assert atr_periods == [56, 56]
+    assert ema_periods == [200, 200]
 
 
 @pytest.mark.anyio

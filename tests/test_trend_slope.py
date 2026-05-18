@@ -28,7 +28,7 @@ def test_slope_from_synthetic_klines_positive_negative_flat():
 
 
 def test_regime_misalignment_downgrades_and_hard_block_drops():
-    snap = _snap(long_short_ratio=2.7, open_interest_change_pct_window=0.07, price_change_pct_1h=0.01, ema50_1h=90.0)
+    snap = _snap(long_short_ratio=2.7, open_interest_change_pct_window=0.07, price_change_pct_1h=0.01, regime_ema=90.0)
     out = evaluate(snap, _cfg())
     short = [c for c in out if c.direction is Direction.SHORT][0]
     assert short.is_strong is False
@@ -40,8 +40,8 @@ def test_regime_misalignment_downgrades_and_hard_block_drops():
     assert all(c.direction is not Direction.SHORT for c in out2)
 
 
-def test_1h_slope_misalignment_downgrades():
-    snap = _snap(long_short_ratio=2.7, open_interest_change_pct_window=0.07, price_change_pct_1h=0.01, ema50_slope_1h=0.01)
+def test_regime_slope_misalignment_downgrades():
+    snap = _snap(long_short_ratio=2.7, open_interest_change_pct_window=0.07, price_change_pct_1h=0.01, regime_slope=0.01)
     out = evaluate(snap, _cfg())
     short = [c for c in out if c.direction is Direction.SHORT][0]
     assert short.is_strong is False
@@ -50,7 +50,7 @@ def test_1h_slope_misalignment_downgrades():
 
 
 def test_aligned_candidate_untouched_and_missing_passes_through():
-    s1 = _snap(long_short_ratio=2.7, open_interest_change_pct_window=0.07, price_change_pct_1h=0.01, ema50_1h=120.0, ema50_slope_1h=-0.01)
+    s1 = _snap(long_short_ratio=2.7, open_interest_change_pct_window=0.07, price_change_pct_1h=0.01, regime_ema=120.0, regime_slope=-0.01)
     out1 = evaluate(s1, _cfg())
     c1 = [c for c in out1 if c.direction is Direction.SHORT][0]
     assert all(r.name not in {"trend_regime", "slope_regime"} for r in c1.fired_rules)
@@ -63,10 +63,23 @@ def test_aligned_candidate_untouched_and_missing_passes_through():
 
 
 def test_liq_cascade_exempt_from_trend_slope_gates():
-    snap = _snap(short_liquidations_usd_window=80_000_000.0, ema50_1h=50.0, ema50_slope_1h=0.02)
+    snap = _snap(short_liquidations_usd_window=80_000_000.0, regime_ema=50.0, regime_slope=0.02)
     out = evaluate(snap, _cfg())
     short = [c for c in out if c.direction is Direction.SHORT][0]
     assert all(r.name != "trend_regime" for r in short.fired_rules)
     assert all(r.name != "slope_regime" for r in short.fired_rules)
     assert all(r.name != "trend_regime" for r in short.entry_downgrades)
     assert all(r.name != "slope_regime" for r in short.entry_downgrades)
+
+
+def test_legacy_ema50_1h_is_not_active_driver_when_regime_fields_present():
+    snap = _snap(
+        long_short_ratio=2.7,
+        open_interest_change_pct_window=0.07,
+        price_change_pct_1h=0.01,
+        regime_ema=120.0,
+        ema50_1h=90.0,
+    )
+    out = evaluate(snap, _cfg())
+    short = [c for c in out if c.direction is Direction.SHORT][0]
+    assert all(r.name != "trend_regime" for r in short.entry_downgrades)
