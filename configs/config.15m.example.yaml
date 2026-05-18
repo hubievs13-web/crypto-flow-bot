@@ -13,4 +13,4 @@ signals:
     slope_window_bars: 24
     atr_period: 56
   regime:
-    timeframe: "1h"
+    timeframe: "15m"

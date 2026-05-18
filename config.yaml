@@ -18,7 +18,7 @@ exit_check_interval_seconds: 5
 
 # Minimum gap between two entry alerts on the same symbol+direction (seconds).
 # 2h cooldown stops the bot from re-firing while a metric oscillates around a threshold.
-alert_cooldown_seconds: 7200  # 2h
+alert_cooldown_seconds: 1800  # 2h
 
 # ─── Entry signals ──────────────────────────────────────────────────────────
 # A "signal" fires when its rule says so AND no other signal has fired for the
@@ -26,7 +26,7 @@ alert_cooldown_seconds: 7200  # 2h
 # (any of them is enough). The signal engine reports which rule(s) fired.
 
 signals:
-  timeframe_short: "1h"
+  timeframe_short: "15m"
 
   # Cross-snapshot confluence window. The signal engine remembers which rules
   # fired in each direction for the last X minutes (per symbol). Two effects:
@@ -84,15 +84,16 @@ signals:
 
   oi_surge:
     enabled: true
-    window_minutes: 60
+    window_minutes: 15
     pct_change_threshold: 0.025
     require_healthy: true
     quality_epsilon_pct: 0.0005
 
   taker_confirmation:
     enabled: true
-    dominance_threshold: 0.55
-    cvd_window_bars: 6
+    bullish_threshold: 0.55
+    bearish_threshold: 0.45
+    cvd_window_bars: 24
     cvd_alignment_required: false
 
   lsr_extreme:
@@ -110,15 +111,15 @@ signals:
   # in a downtrend) is the highest-EV setup, so we don't filter those out.
   trend_filter:
     enabled: true
-    ema_period: 50
+    ema_period: 200
     require_alignment: true
     exempt_rules: ["liq_cascade"]
     require_4h_alignment: true
     require_1h_slope_alignment: true
     require_4h_slope_alignment: true
-    slope_window_bars: 6
+    slope_window_bars: 24
     slope_window_bars_4h: 6
-    atr_period: 14
+    atr_period: 56
     slope_min_abs: 0.0005
     # Hard-block enabled (PR fix P0-6). Counter-trend signals must be dropped,
     # not just downgraded -- a misaligned strong rule pre-fix could still
@@ -161,7 +162,7 @@ signals:
 
   regime:
     enabled: true
-    timeframe: "1h"
+    timeframe: "15m"
     adx_period: 14
     trend_adx_threshold: 25
     range_adx_threshold: 20
@@ -190,7 +191,7 @@ signals:
         short_heavy_below: 0.70
       oi_surge:
         enabled: true
-        window_minutes: 60
+        window_minutes: 15
         pct_change_threshold: 0.025      # 2.5% / 1h
         require_healthy: true
         quality_epsilon_pct: 0.0005
@@ -210,7 +211,7 @@ signals:
         short_heavy_below: 0.70
       oi_surge:
         enabled: true
-        window_minutes: 60
+        window_minutes: 15
         pct_change_threshold: 0.025
         require_healthy: true
         quality_epsilon_pct: 0.0005
@@ -236,7 +237,7 @@ signals:
         short_heavy_below: 0.65
       oi_surge:
         enabled: true
-        window_minutes: 60
+        window_minutes: 15
         pct_change_threshold: 0.030      # SOL OI moves faster than BTC/ETH
         require_healthy: true
         quality_epsilon_pct: 0.0005
@@ -287,7 +288,7 @@ exits:
   # signal -- below this, exits routinely cut winners before the funding edge
   # has had time to play out. See QC backtest variants BASELINE/D/B (commit
   # message of this change for numbers).
-  time_stop_minutes: 480   # 8 hours
+  time_stop_minutes: 120   # 8 hours
 
   # Reason-invalidation: close (near break-even) when the original entry thesis
   # has clearly broken.
@@ -307,7 +308,7 @@ exits:
     funding_normalized_retrace_pct: 0.5        # invalidate after funding retraces 50% to zero
     lsr_normalized_retrace_pct: 0.5            # invalidate after LSR retraces 50% to neutral 1.0
     momentum_reversal_pct: 0.005               # 0.5% reverse against entry triggers early exit
-    momentum_window_minutes: 60                # ...only within first 60 minutes after entry
+    momentum_window_minutes: 15                # ...only within first 60 minutes after entry
 
 # ─── Notifier formatting ────────────────────────────────────────────────────
 notifier:
@@ -389,7 +390,7 @@ risk:
   # re-entry on the same symbol for this many seconds. The 6-hour log we
   # debugged showed 7 reopens within 30 minutes of a close, all of which
   # were losing the same way; this gate stops that. Set 0 to disable.
-  post_exit_cooldown_seconds: 7200   # 2 hours
+  post_exit_cooldown_seconds: 1800   # 2 hours
 
   # Deduplication window for skip-reason INFO logs. When the same
   # (symbol, direction, reason) triplet repeats inside this window, the

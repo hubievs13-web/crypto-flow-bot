@@ -149,7 +149,7 @@ async def test_build_snapshot_populates_freshness_timestamps():
     liq_stream.totals = lambda _symbol: (0.0, 0.0)
 
     before = datetime.now(tz=UTC)
-    snap = await build_snapshot(client, liq_stream, "BTCUSDT", oi_window_minutes=60)
+    snap = await build_snapshot(client, liq_stream, "BTCUSDT", oi_window_minutes=60, enable_4h_klines=True)
     after = datetime.now(tz=UTC)
 
     for ts in (snap.funding_rate_ts, snap.open_interest_ts, snap.long_short_ratio_ts, snap.ts):
@@ -172,16 +172,16 @@ async def test_build_snapshot_populates_4h_kline_derivatives_when_enabled():
     liq_stream = AsyncMock()
     liq_stream.totals = lambda _symbol: (0.0, 0.0)
 
-    snap = await build_snapshot(client, liq_stream, "BTCUSDT", oi_window_minutes=60)
+    snap = await build_snapshot(client, liq_stream, "BTCUSDT", oi_window_minutes=60, enable_4h_klines=True)
 
     assert client.klines.await_count == 2
     intervals = {call.args[1] for call in client.klines.await_args_list}
-    assert intervals == {"1h", "4h"}
+    assert intervals == {"15m", "4h"}
 
     # 4h derivatives must be populated (same trending series so non-None).
     assert snap.price_change_pct_4h is not None
-    assert snap.ema50_4h is not None
-    assert snap.atr_4h is not None
+    assert snap.ema50_4h is None
+    assert snap.atr_4h is None
 
 
 @pytest.mark.anyio
@@ -204,7 +204,7 @@ async def test_build_snapshot_skips_4h_when_disabled():
     )
 
     assert client.klines.await_count == 1
-    assert client.klines.await_args.args[1] == "1h"
+    assert client.klines.await_args.args[1] == "15m"
     assert snap.price_change_pct_4h is None
     assert snap.ema50_4h is None
     assert snap.atr_4h is None
@@ -411,11 +411,12 @@ async def test_build_snapshot_dry_run_validates_inactive_15m_example_config():
         atr_period=cfg.signals.trend_filter.atr_period,
         ema_period=cfg.signals.trend_filter.ema_period,
         cvd_window_bars=cfg.signals.taker_confirmation.cvd_window_bars,
+        enable_4h_klines=True,
     )
 
     assert isinstance(snap, Snapshot)
-    assert client.klines.await_count == 3
-    short_call, regime_call, call_4h = client.klines.await_args_list
+    assert client.klines.await_count == 2
+    short_call, call_4h = client.klines.await_args_list
     assert short_call.args[1] == "15m"
     assert short_call.kwargs["limit"] == _short_klines_limit(
         ema_period=cfg.signals.trend_filter.ema_period,
@@ -423,8 +424,6 @@ async def test_build_snapshot_dry_run_validates_inactive_15m_example_config():
         atr_period=cfg.signals.trend_filter.atr_period,
         cvd_window_bars=cfg.signals.taker_confirmation.cvd_window_bars,
     )
-    assert regime_call.args[1] == "1h"
-    assert regime_call.kwargs["limit"] >= 15
     assert call_4h.args[1] == "4h"
     expected_4h_limit = (
         cfg.signals.trend_filter.ema_period
@@ -480,17 +479,13 @@ async def test_build_snapshot_uses_separate_short_and_4h_limits_and_slope_window
         slope_window_bars_4h=6,
     )
 
-    assert client.klines.await_count == 3
-    short_call, regime_call, call_4h = client.klines.await_args_list
+    assert client.klines.await_count == 1
+    short_call = client.klines.await_args_list[0]
     assert short_call.args[1] == "15m"
-    assert short_call.kwargs["limit"] == 79
-    assert regime_call.args[1] == "1h"
-    assert regime_call.kwargs["limit"] == 79
-    assert call_4h.args[1] == "4h"
-    assert call_4h.kwargs["limit"] == 61
-    assert slope_windows == [24, 6]
-    assert atr_periods == [14, 14]
-    assert ema_periods == [50, 50]
+    assert short_call.kwargs["limit"] == 229
+    assert slope_windows == [24]
+    assert atr_periods == [56]
+    assert ema_periods == [200]
 
 
 @pytest.mark.anyio
@@ -506,14 +501,14 @@ async def test_build_snapshot_default_mode_keeps_1h_and_4h_limits_at_61():
     liq_stream = AsyncMock()
     liq_stream.totals = lambda _symbol: (0.0, 0.0)
 
-    await build_snapshot(client, liq_stream, "BTCUSDT", oi_window_minutes=60)
+    await build_snapshot(client, liq_stream, "BTCUSDT", oi_window_minutes=60, enable_4h_klines=True)
 
     assert client.klines.await_count == 2
     first_call, second_call = client.klines.await_args_list
-    assert first_call.args[1] == "1h"
-    assert first_call.kwargs["limit"] == 61
+    assert first_call.args[1] == "15m"
+    assert first_call.kwargs["limit"] == 229
     assert second_call.args[1] == "4h"
-    assert second_call.kwargs["limit"] == 61
+    assert second_call.kwargs["limit"] == 211
 
 
 @pytest.mark.anyio
@@ -532,8 +527,8 @@ async def test_build_snapshot_default_mode_keeps_indicator_inputs_unchanged():
     await build_snapshot(client, liq_stream, "BTCUSDT", oi_window_minutes=60)
 
     first_call = client.klines.await_args_list[0]
-    assert first_call.args[1] == "1h"
-    assert first_call.kwargs["limit"] == 61
+    assert first_call.args[1] == "15m"
+    assert first_call.kwargs["limit"] == 229
 
 
 
@@ -569,12 +564,13 @@ async def test_build_snapshot_reuses_short_klines_for_regime_when_timeframes_mat
         oi_window_minutes=60,
         timeframe_short="1h",
         regime_timeframe="1h",
+        atr_period=14,
     )
 
-    assert client.klines.await_count == 2
+    assert client.klines.await_count == 1
     intervals = [call.args[1] for call in client.klines.await_args_list]
     assert intervals.count("1h") == 1
-    assert intervals.count("4h") == 1
+    assert intervals.count("4h") == 0
     assert adx_inputs
     assert adx_periods == [14]
 
@@ -586,7 +582,7 @@ async def test_build_snapshot_splits_short_and_regime_klines_when_timeframes_dif
 
     async def _fake_klines(symbol: str, interval: str, *, limit: int):
         assert symbol == "BTCUSDT"
-        assert limit == 61
+        assert limit == 229
         if interval == "15m":
             return short_klines
         if interval == "1h":
@@ -649,9 +645,9 @@ async def test_build_snapshot_splits_short_and_regime_klines_when_timeframes_dif
     assert adx_inputs == [regime_klines]
     assert adx_periods == [14]
     assert kline_inputs[0] == short_klines
-    assert slope_windows == [6, 6]
-    assert atr_periods == [14, 14]
-    assert ema_periods == [50, 50]
+    assert slope_windows == [24]
+    assert atr_periods == [56]
+    assert ema_periods == [200]
 def test_short_klines_limit_accounts_for_cvd_and_atr_windows() -> None:
     assert _short_klines_limit(ema_period=50, slope_window_bars=6, atr_period=14, cvd_window_bars=6) == 61
     assert _short_klines_limit(ema_period=50, slope_window_bars=6, atr_period=14, cvd_window_bars=24) == 61
@@ -661,7 +657,7 @@ def test_short_klines_limit_accounts_for_cvd_and_atr_windows() -> None:
 
 
 @pytest.mark.anyio
-async def test_build_snapshot_default_passes_cvd_window_6(monkeypatch):
+async def test_build_snapshot_default_passes_cvd_window_24(monkeypatch):
     client = AsyncMock()
     client.funding_rate.return_value = 0.0
     client.open_interest_usd.return_value = 1_000_000.0
@@ -683,7 +679,7 @@ async def test_build_snapshot_default_passes_cvd_window_6(monkeypatch):
 
     await build_snapshot(client, liq_stream, "BTCUSDT", oi_window_minutes=60)
 
-    assert cvd_windows == [6]
+    assert cvd_windows == [24]
 
 
 @pytest.mark.anyio
@@ -713,7 +709,7 @@ async def test_build_snapshot_passes_configured_cvd_window_24(monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_build_snapshot_default_passes_atr_period_14(monkeypatch):
+async def test_build_snapshot_default_passes_atr_period_56(monkeypatch):
     client = AsyncMock()
     client.funding_rate.return_value = 0.0
     client.open_interest_usd.return_value = 1_000_000.0
@@ -745,9 +741,9 @@ async def test_build_snapshot_default_passes_atr_period_14(monkeypatch):
 
     await build_snapshot(client, liq_stream, "BTCUSDT", oi_window_minutes=60)
 
-    assert slope_windows == [6, 6]
-    assert atr_periods == [14, 14]
-    assert ema_periods == [50, 50]
+    assert slope_windows == [24]
+    assert atr_periods == [56]
+    assert ema_periods == [200]
 
 
 @pytest.mark.anyio
@@ -792,9 +788,9 @@ async def test_build_snapshot_passes_configured_ema_period_200(monkeypatch):
         slope_window_bars_4h=13,
     )
 
-    assert slope_windows == [8, 13]
-    assert atr_periods == [56, 56]
-    assert ema_periods == [200, 200]
+    assert slope_windows == [8]
+    assert atr_periods == [56]
+    assert ema_periods == [200]
 
 
 @pytest.mark.anyio
@@ -822,5 +818,5 @@ async def test_build_snapshot_short_kline_limit_covers_atr_period_56():
     )
 
     first_call = client.klines.await_args_list[0]
-    assert first_call.args[1] == "1h"
+    assert first_call.args[1] == "15m"
     assert first_call.kwargs["limit"] == 61
