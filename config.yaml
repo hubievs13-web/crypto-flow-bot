@@ -222,9 +222,9 @@ signals:
       oi_surge:
         enabled: true
         window_minutes: 15
-        # Observed BTC max 15m abs change: 1.59%. 1.2% catches the ~13
-        # true bursts seen on 2026-05-18.
-        pct_change_threshold: 0.012      # 1.2% / 15min (was 2.5% / 1h)
+        # M4 calibration: BTC OI surge threshold lowered to 0.9% / 15min
+        # while preserving the existing decimal storage format.
+        pct_change_threshold: 0.009      # 0.9% / 15min (M4)
         require_healthy: true
         quality_epsilon_pct: 0.0005
       liq_cascade:
@@ -255,10 +255,9 @@ signals:
       oi_surge:
         enabled: true
         window_minutes: 15
-        # Observed ETH max 15m abs change: 1.17% (positive). 1.15% sits
-        # at today's peak -- catches only real OI bursts and ignores the
-        # 0.8-1.0% noise floor that triggers on every active hour.
-        pct_change_threshold: 0.0115
+        # M4 calibration: ETH OI surge threshold lowered to 1.0% / 15min
+        # while preserving the existing decimal storage format.
+        pct_change_threshold: 0.010
         require_healthy: true
         quality_epsilon_pct: 0.0005
       liq_cascade:
@@ -292,10 +291,9 @@ signals:
       oi_surge:
         enabled: true
         window_minutes: 15
-        # Observed SOL max 15m abs change: 1.34%. 1.15% catches the real
-        # bursts on 2026-05-18 while ignoring the sub-1% noise floor that
-        # would trigger on every active hour.
-        pct_change_threshold: 0.0115    # 1.15% / 15min (was 3.0% / 1h)
+        # M4 calibration: SOL OI surge threshold lowered to 0.9% / 15min
+        # while preserving the existing decimal storage format.
+        pct_change_threshold: 0.009     # 0.9% / 15min (M4)
         require_healthy: true
         quality_epsilon_pct: 0.0005
       liq_cascade:
