@@ -71,7 +71,11 @@ class PredictedFundingCfg(BaseModel):
 
 class RegimeCfg(BaseModel):
     enabled: bool = True
-    timeframe: Literal["1h", "15m"] = "15m"
+    # Default kept at 1h to match the README design intent for the 15m
+    # migration ("Regime stays on 1h"). EMA50_1h ~= EMA200_15m, so the
+    # regime axis stays on the slower horizon while the entry timeframe
+    # samples 15m bars.
+    timeframe: Literal["1h", "15m"] = "1h"
     adx_period: int = 14
     trend_adx_threshold: float = 25
     range_adx_threshold: float = 20

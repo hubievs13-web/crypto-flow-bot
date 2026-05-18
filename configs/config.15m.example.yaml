@@ -13,4 +13,5 @@ signals:
     slope_window_bars: 24
     atr_period: 56
   regime:
-    timeframe: "15m"
+    # README intent: regime stays on 1h even when entry tf is 15m.
+    timeframe: "1h"

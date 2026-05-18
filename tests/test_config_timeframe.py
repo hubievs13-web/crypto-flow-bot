@@ -44,15 +44,16 @@ def test_trend_filter_atr_period_rejects_non_positive() -> None:
         SignalsCfg(trend_filter=TrendFilterCfg(atr_period=0))
 
 
-def test_regime_timeframe_default_is_15m() -> None:
+def test_regime_timeframe_default_is_1h() -> None:
+    """README intent: regime stays on 1h even when entry tf is 15m."""
     cfg = Config(symbols=["BTCUSDT"])
-    assert cfg.signals.regime.timeframe == "15m"
+    assert cfg.signals.regime.timeframe == "1h"
 
 
-def test_regime_timeframe_accepts_15m_and_default_is_15m() -> None:
+def test_regime_timeframe_accepts_15m_override() -> None:
     default_cfg = Config(symbols=["BTCUSDT"])
     override_cfg = Config(symbols=["BTCUSDT"], signals=SignalsCfg(regime=RegimeCfg(timeframe="15m")))
-    assert default_cfg.signals.regime.timeframe == "15m"
+    assert default_cfg.signals.regime.timeframe == "1h"
     assert override_cfg.signals.regime.timeframe == "15m"
 
 
