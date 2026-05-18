@@ -17,8 +17,8 @@ poll_interval_seconds: 60
 exit_check_interval_seconds: 5
 
 # Minimum gap between two entry alerts on the same symbol+direction (seconds).
-# 2h cooldown stops the bot from re-firing while a metric oscillates around a threshold.
-alert_cooldown_seconds: 1800  # 2h
+# 30-minute cooldown stops the bot from re-firing while a metric oscillates around a threshold.
+alert_cooldown_seconds: 1800  # 30 minutes
 
 # ─── Entry signals ──────────────────────────────────────────────────────────
 # A "signal" fires when its rule says so AND no other signal has fired for the
@@ -243,19 +243,22 @@ signals:
         enabled: true
         # Observed ETH LSR range 2026-05-18: 1.37-1.53.
         # Asymmetric calibration:
-        #   long_heavy_above 1.50: just below today's max 1.53 -- fires
-        #     when ETH longs crowd into the top of the range (SHORT signal).
+        #   long_heavy_above 1.65: well above today's max 1.53 -- fires
+        #     only when ETH longs really pile in (SHORT signal). Lifted
+        #     from 1.50 because that level was inside the current
+        #     diapason and would have produced many low-quality SHORT
+        #     fires on every snapshot above the median.
         #   short_heavy_below 0.90: real stress level -- only fires when
         #     shorts pile in during a selloff (LONG signal).
-        long_heavy_above: 1.50
+        long_heavy_above: 1.65
         short_heavy_below: 0.90
       oi_surge:
         enabled: true
         window_minutes: 15
-        # Observed ETH max 15m abs change: 1.17% (positive). 1.0% catches
-        # the handful of true bursts seen on 2026-05-18 -- a 1.2% cut was
-        # unreachable for ETH in this regime.
-        pct_change_threshold: 0.010
+        # Observed ETH max 15m abs change: 1.17% (positive). 1.15% sits
+        # at today's peak -- catches only real OI bursts and ignores the
+        # 0.8-1.0% noise floor that triggers on every active hour.
+        pct_change_threshold: 0.0115
         require_healthy: true
         quality_epsilon_pct: 0.0005
       liq_cascade:
@@ -289,9 +292,10 @@ signals:
       oi_surge:
         enabled: true
         window_minutes: 15
-        # Observed SOL max 15m abs change: 1.34%. 1.0% catches the ~5
-        # true bursts on 2026-05-18.
-        pct_change_threshold: 0.010      # 1.0% / 15min (was 3.0% / 1h)
+        # Observed SOL max 15m abs change: 1.34%. 1.15% catches the real
+        # bursts on 2026-05-18 while ignoring the sub-1% noise floor that
+        # would trigger on every active hour.
+        pct_change_threshold: 0.0115    # 1.15% / 15min (was 3.0% / 1h)
         require_healthy: true
         quality_epsilon_pct: 0.0005
       liq_cascade:
