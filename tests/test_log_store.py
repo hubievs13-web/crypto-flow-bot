@@ -62,3 +62,30 @@ def test_write_blocked_uses_daily_partition(tmp_path):
     ))
     assert (tmp_path / "blocked-2026-05-18.jsonl").is_file()
     assert not (tmp_path / "blocked.jsonl").exists()
+
+
+def test_write_decision_summary_uses_daily_partition_and_preserves_reason_dicts(tmp_path):
+    logger = JsonlLogger(path=tmp_path)
+    ts = datetime(2026, 5, 18, 10, 0, tzinfo=UTC)
+    payload = {
+        "event_type": "decision_summary",
+        "timestamp_utc": ts.isoformat(),
+        "timeframe_short": "15m",
+        "regime_timeframe": "15m",
+        "total_candidates": 4,
+        "long_candidates": 2,
+        "short_candidates": 2,
+        "accepted_signals": 1,
+        "rejected_or_blocked": 3,
+        "downgrade_counts_by_reason": {"trend_regime": 2},
+        "blocked_counts_by_reason": {"cooldown": 1, "conflicting_signals": 2},
+        "exit_counts_by_reason": {"exit_take_profit": 1},
+        "missing_data_counts_by_reason": {"missing_regime_ema": 1},
+        "stale_data_counts_by_reason": {"stale_funding": 1},
+    }
+    asyncio.run(logger.write_decision_summary(payload, snapshot_ts=ts))
+    p = tmp_path / "stats-2026-05-18.jsonl"
+    assert p.is_file()
+    row = p.read_text(encoding="utf-8").strip()
+    assert '"blocked_counts_by_reason": {"cooldown": 1, "conflicting_signals": 2}' in row
+    assert '"downgrade_counts_by_reason": {"trend_regime": 2}' in row

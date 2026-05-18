@@ -422,6 +422,7 @@ class Bot:
                 and now.hour >= liveness_hour
                 and self.state.last_liveness_ping_date != today_key
             ):
+                await self._persist_decision_summary(now)
                 hb = format_heartbeat(len(self.state.open_positions()), self.cfg.symbols, self._decision_summary)
                 await self.notifier.send(hb.text)
                 await self.logger.write_alert(hb)
@@ -436,10 +437,36 @@ class Bot:
                 continue
             if now - self._last_heartbeat >= timedelta(minutes=self.cfg.notifier.heartbeat_minutes):
                 self._last_heartbeat = now
+                await self._persist_decision_summary(now)
                 hb = format_heartbeat(len(self.state.open_positions()), self.cfg.symbols, self._decision_summary)
                 await self.notifier.send(hb.text)
                 await self.logger.write_alert(hb)
                 self._decision_summary = DecisionSummary()
+
+    async def _persist_decision_summary(self, now: datetime) -> None:
+        summary = self._decision_summary
+        payload = {
+            "event_type": "decision_summary",
+            "timestamp_utc": now.isoformat(),
+            "timeframe_short": self.cfg.signals.timeframe_short,
+            "regime_timeframe": self.cfg.signals.regime.timeframe,
+            "total_candidates": summary.total_candidates,
+            "long_candidates": summary.long_candidates,
+            "short_candidates": summary.short_candidates,
+            "accepted_signals": summary.accepted_signals,
+            "rejected_or_blocked": summary.rejected_or_blocked,
+            "downgrade_counts_by_reason": dict(summary.downgrade_counts_by_reason),
+            "blocked_counts_by_reason": dict(summary.blocked_counts_by_reason),
+            "exit_counts_by_reason": dict(summary.exit_counts_by_reason),
+            "missing_data_counts_by_reason": dict(summary.missing_data_counts_by_reason),
+            "stale_data_counts_by_reason": dict(summary.stale_data_counts_by_reason),
+        }
+        await self._safe_log_write(
+            "write_decision_summary",
+            lambda payload=payload, now=now: self.logger.write_decision_summary(payload, snapshot_ts=now),
+            event_type="decision_summary",
+            timestamp_utc=payload["timestamp_utc"],
+        )
 
     def _collect_data_health(self, snap: Snapshot) -> None:
         missing = {"missing_klines_15m": snap.klines_1h_ts is None, "missing_regime_ema": snap.regime_ema is None, "missing_regime_slope": snap.regime_slope is None, "missing_atr": snap.atr_1h is None, "missing_taker": snap.taker_buy_dominance_1h is None, "missing_cvd": snap.cvd_window_usd is None, "missing_oi": snap.open_interest_ts is None}

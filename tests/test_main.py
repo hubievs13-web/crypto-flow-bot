@@ -24,6 +24,7 @@ def _bot(tmp_path) -> Bot:
     cast(Any, bot.logger).write_position = AsyncMock()
     cast(Any, bot.logger).write_snapshot = AsyncMock()
     cast(Any, bot.logger).write_blocked = AsyncMock()
+    cast(Any, bot.logger).write_decision_summary = AsyncMock()
     bot._entry_lock = asyncio.Lock()
     bot.confluence_cache = cast(Any, None)
     bot._decision_summary = DecisionSummary()
@@ -158,3 +159,45 @@ def test_collect_data_health_counts_missing_and_stale(tmp_path):
     bot._collect_data_health(snap)
     assert bot._decision_summary.missing_data_counts_by_reason.get("missing_regime_ema", 0) == 1
     assert bot._decision_summary.stale_data_counts_by_reason.get("stale_funding", 0) == 1
+
+
+def test_persist_decision_summary_writes_required_schema_before_reset(tmp_path):
+    async def _run() -> None:
+        bot = _bot(tmp_path)
+        bot._decision_summary = DecisionSummary(
+            total_candidates=3,
+            long_candidates=2,
+            short_candidates=1,
+            accepted_signals=1,
+            rejected_or_blocked=2,
+            downgrade_counts_by_reason={"trend_regime": 2},
+            blocked_counts_by_reason={"cooldown": 2},
+            exit_counts_by_reason={"exit_regime_invalidated": 1},
+            missing_data_counts_by_reason={"missing_regime_ema": 1},
+            stale_data_counts_by_reason={"stale_funding": 1},
+        )
+        now = datetime(2026, 5, 18, 10, 0, tzinfo=UTC)
+        await bot._persist_decision_summary(now)
+        cast(Any, bot.logger).write_decision_summary.assert_awaited_once()
+        payload = cast(Any, bot.logger).write_decision_summary.await_args.args[0]
+        assert payload["event_type"] == "decision_summary"
+        assert payload["timeframe_short"] == "15m"
+        assert payload["regime_timeframe"] == "15m"
+        for key in (
+            "total_candidates",
+            "long_candidates",
+            "short_candidates",
+            "accepted_signals",
+            "rejected_or_blocked",
+            "downgrade_counts_by_reason",
+            "blocked_counts_by_reason",
+            "exit_counts_by_reason",
+            "missing_data_counts_by_reason",
+            "stale_data_counts_by_reason",
+        ):
+            assert key in payload
+        assert payload["blocked_counts_by_reason"] == {"cooldown": 2}
+        assert payload["downgrade_counts_by_reason"] == {"trend_regime": 2}
+        assert bot._decision_summary.total_candidates == 3
+
+    asyncio.run(_run())

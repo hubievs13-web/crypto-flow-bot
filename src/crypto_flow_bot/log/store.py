@@ -106,3 +106,11 @@ class JsonlLogger:
             "confluence_window_rules": sorted(confluence_window_rules),
         }
         await self._append(self._daily_path("blocked", snapshot_ts), payload)
+
+    async def write_decision_summary(self, payload: dict, *, snapshot_ts: datetime | None = None) -> None:
+        """Persist one heartbeat-window decision summary event.
+
+        Caller owns schema stability and compactness; this method only appends
+        to the existing daily-partitioned JSONL path.
+        """
+        await self._append(self._daily_path("stats", snapshot_ts), payload)
