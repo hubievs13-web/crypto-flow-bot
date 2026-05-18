@@ -326,3 +326,32 @@ def test_no_events_when_position_calm():
     events = evaluate_exit(pos, _snap(100.5), _cfg())
     # Slight move up — no SL, no TP, no trailing, no time stop, no reason data.
     assert events == []
+
+def test_regime_invalidation_long_on_15m_break():
+    pos = _long_position(entry=100.0)
+    snap = Snapshot(symbol="BTCUSDT", ts=datetime.now(tz=UTC), price=99.0, regime_ema=100.0, regime_slope=-0.001)
+    events = evaluate_exit(pos, snap, _cfg())
+    assert any(e.kind == "EXIT_REGIME_INVALIDATED" for e in events)
+
+
+def test_regime_invalidation_short_on_15m_break():
+    pos = _short_position(entry=100.0)
+    snap = Snapshot(symbol="BTCUSDT", ts=datetime.now(tz=UTC), price=101.0, regime_ema=100.0, regime_slope=0.001)
+    events = evaluate_exit(pos, snap, _cfg())
+    assert any(e.kind == "EXIT_REGIME_INVALIDATED" for e in events)
+
+
+def test_opposite_signal_exit_event():
+    pos = _long_position(entry=100.0)
+    events = evaluate_exit(pos, _snap(100.2), _cfg(), has_opposite_signal=True)
+    assert any(e.kind == "EXIT_OPPOSITE_SIGNAL" for e in events)
+
+
+def test_time_stop_uses_15m_shortened_default():
+    cfg = _cfg()
+    assert cfg.exits.time_stop_minutes == 120
+
+
+def test_trailing_uses_configured_atr_period_default_56():
+    cfg = _cfg()
+    assert cfg.signals.trend_filter.atr_period == 56

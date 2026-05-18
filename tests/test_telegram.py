@@ -370,3 +370,22 @@ def test_mask_telegram_token_masks_send_and_updates_urls():
     assert _mask_telegram_token("https://api.telegram.org/bot999:XYZ/getUpdates") == (
         "https://api.telegram.org/bot***/getUpdates"
     )
+from crypto_flow_bot.engine.exits import ExitEvent  # noqa: E402
+from crypto_flow_bot.notify.telegram import format_exit_alert  # noqa: E402
+
+
+def test_exit_alert_labels_use_regime_neutral_wording(tmp_path, monkeypatch):
+    monkeypatch.setenv("CRYPTO_FLOW_BOT_STATE_DIR", str(tmp_path))
+    cfg = _cfg()
+    store = StateStore(path=tmp_path)
+    snap = _snap(price=100.0, atr=1.0)
+    candidate = SignalCandidate(
+        symbol="BTCUSDT", direction=Direction.LONG,
+        fired_rules=[FiredRule(name="lsr_extreme", description="L/S 0.55")],
+        snapshot=snap,
+        confluence_window_rules={"lsr_extreme"},
+    )
+    pos = store.open_from_signal(candidate, cfg)
+    alert = format_exit_alert(pos, ExitEvent(kind="EXIT_REGIME_INVALIDATED", fraction_closed=1.0, description="regime broke"), 99.0, cfg)
+    assert "Regime invalidated" in alert.text
+    assert "4h" not in alert.text and "1h" not in alert.text

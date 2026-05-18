@@ -72,7 +72,13 @@ def _trailing_stop_price(position: Position, lock_in_pct: float) -> float:
     return position.entry_price * (1 + sign * lock_in_pct)
 
 
-def evaluate_exit(position: Position, snap: Snapshot, cfg: Config) -> list[ExitEvent]:
+def evaluate_exit(
+    position: Position,
+    snap: Snapshot,
+    cfg: Config,
+    *,
+    has_opposite_signal: bool = False,
+) -> list[ExitEvent]:
     """Evaluate exit rules. Caller is responsible for mutating `position` based on returned events."""
     if position.closed or position.symbol != snap.symbol:
         return []
@@ -141,6 +147,44 @@ def evaluate_exit(position: Position, snap: Snapshot, cfg: Config) -> list[ExitE
                     ),
                 )
             )
+
+
+    # --- Regime invalidation / opposite-signal invalidation ---
+    regime_invalidated = False
+    regime_why: list[str] = []
+    if snap.regime_ema is not None:
+        if position.direction is Direction.LONG and price <= snap.regime_ema:
+            regime_invalidated = True
+            regime_why.append(f"price {price:g} <= regime_ema {snap.regime_ema:g}")
+        elif position.direction is Direction.SHORT and price >= snap.regime_ema:
+            regime_invalidated = True
+            regime_why.append(f"price {price:g} >= regime_ema {snap.regime_ema:g}")
+    if snap.regime_slope is not None:
+        if position.direction is Direction.LONG and snap.regime_slope <= 0:
+            regime_invalidated = True
+            regime_why.append(f"regime_slope {snap.regime_slope * 100:+.2f}% <= 0")
+        elif position.direction is Direction.SHORT and snap.regime_slope >= 0:
+            regime_invalidated = True
+            regime_why.append(f"regime_slope {snap.regime_slope * 100:+.2f}% >= 0")
+    if regime_invalidated:
+        events.append(
+            ExitEvent(
+                kind="EXIT_REGIME_INVALIDATED",
+                fraction_closed=position.open_fraction,
+                description="; ".join(regime_why) if regime_why else "regime invalidated",
+            )
+        )
+        return events
+
+    if has_opposite_signal:
+        events.append(
+            ExitEvent(
+                kind="EXIT_OPPOSITE_SIGNAL",
+                fraction_closed=position.open_fraction,
+                description="valid opposite signal detected",
+            )
+        )
+        return events
 
     # --- Time stop ---
     age = datetime.now(tz=UTC) - position.entry_ts
