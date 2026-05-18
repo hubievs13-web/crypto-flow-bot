@@ -93,9 +93,9 @@ signals:
     # 1134 post-migration snapshots/symbol on 2026-05-18 the max abs
     # OI 15m change was BTC 1.59% / ETH 1.92% / SOL 1.34% -- the
     # legacy 2.5%/15min cut was unreachable and the rule fired zero
-    # times all day. 1.0% globally keeps it selective but reachable
-    # for at least a handful of true OI bursts per symbol per day.
-    pct_change_threshold: 0.010
+    # times all day. 1.2% globally is the safe default for untracked
+    # symbols; tracked symbols get tighter per-symbol overrides below.
+    pct_change_threshold: 0.012
     require_healthy: true
     quality_epsilon_pct: 0.0005
 
@@ -108,6 +108,9 @@ signals:
 
   lsr_extreme:
     enabled: true
+    # Conservative safe default for any untracked symbol. Each tracked
+    # symbol overrides this with values calibrated to its own 7d
+    # LSR distribution -- see per_symbol blocks below.
     long_heavy_above: 2.0
     short_heavy_below: 0.70
 
@@ -116,9 +119,9 @@ signals:
     window_minutes: 5
     # Calm-regime calibration. Liquidation book is at multi-year lows;
     # max 5m sums on 2026-05-18 were BTC $2.9M / ETH $3.2M / SOL $150k.
-    # 2M global keeps the global rule above per-symbol BTC/ETH overrides
-    # so untracked symbols stay safe but real flushes still register.
-    usd_threshold: 2_000_000
+    # Per-symbol overrides drive actual firing; this global is a safe
+    # default for any untracked symbol added to symbols: above.
+    usd_threshold: 3_000_000
 
   # 1h EMA trend filter — drops counter-trend signals when the larger trend is clear.
   # Liquidation cascades are exempt: a long-flush in an uptrend (or short-squeeze
@@ -177,11 +180,11 @@ signals:
 
   regime:
     enabled: true
-    # Per README design: with timeframe_short=15m, regime stays on 1h
-    # (EMA50_1h ~= EMA200_15m on the regime axis). A 15m regime EMA50
-    # is much shorter than EMA200_15m and produces noisy hard-blocks on
-    # the trend filter near every minor pullback.
-    timeframe: "1h"
+    # 15m regime EMA50 keeps the trend axis on the same timeframe as the
+    # signal axis -- consistent with the 15m migration. README mentioned
+    # 1h as the original design intent, but in current calm regime the
+    # 15m EMA50 is faster to react and a better fit for 15m entries.
+    timeframe: "15m"
     adx_period: 14
     trend_adx_threshold: 25
     range_adx_threshold: 20
@@ -206,26 +209,30 @@ signals:
         short_overheated_below: -0.00006 # -0.006% (was -0.008%)
       lsr_extreme:
         enabled: true
-        # Observed BTC LSR range 2026-05-18: 1.01-1.13. 2.0+ unreachable
-        # in current regime; 1.80/0.80 still captures genuinely
-        # crowded positioning if it returns.
-        long_heavy_above: 1.80
-        short_heavy_below: 0.80
+        # Observed BTC LSR range 2026-05-18: 1.01-1.13 (24h post-migration).
+        # Asymmetric calibration:
+        #   long_heavy_above 1.20: ~6% above current max -- fires when
+        #     longs visibly crowd above the day's range (SHORT signal).
+        #   short_heavy_below 0.90: well below 1.0 -- only fires in
+        #     real stress when shorts pile in (LONG signal).
+        # Putting short_heavy inside the current diapason (e.g. 1.10)
+        # would fire ~60% of snapshots and spam the cache.
+        long_heavy_above: 1.20
+        short_heavy_below: 0.90
       oi_surge:
         enabled: true
         window_minutes: 15
-        # 15min window calibration. Observed max 15m abs change: 1.59%.
-        # 1.0% picks up the ~20 true positive bursts seen on 2026-05-18
-        # while still excluding the long tail of <1% drift.
-        pct_change_threshold: 0.010      # 1.0% / 15min (was 2.5% / 1h)
+        # Observed BTC max 15m abs change: 1.59%. 1.2% catches the ~13
+        # true bursts seen on 2026-05-18.
+        pct_change_threshold: 0.012      # 1.2% / 15min (was 2.5% / 1h)
         require_healthy: true
         quality_epsilon_pct: 0.0005
       liq_cascade:
         enabled: true
         window_minutes: 5
-        # BTC liq-book at multi-year lows; observed 5m max $2.9M.
-        # $2M still requires a real cascading flush (~10x baseline).
-        usd_threshold: 2_000_000
+        # BTC liq-book at multi-year lows; observed 5m max $2.89M.
+        # $3M is just above today's max -- a print that big = real flush.
+        usd_threshold: 3_000_000
 
     ETHUSDT:
       funding_extreme:
@@ -235,21 +242,28 @@ signals:
       lsr_extreme:
         enabled: true
         # Observed ETH LSR range 2026-05-18: 1.37-1.53.
-        long_heavy_above: 1.75
-        short_heavy_below: 0.80
+        # Asymmetric calibration:
+        #   long_heavy_above 1.50: just below today's max 1.53 -- fires
+        #     when ETH longs crowd into the top of the range (SHORT signal).
+        #   short_heavy_below 0.90: real stress level -- only fires when
+        #     shorts pile in during a selloff (LONG signal).
+        long_heavy_above: 1.50
+        short_heavy_below: 0.90
       oi_surge:
         enabled: true
         window_minutes: 15
-        # Observed ETH max 15m abs change: 1.92%. 0.9% catches the
-        # ~25 true positive bursts seen on 2026-05-18.
-        pct_change_threshold: 0.009
+        # Observed ETH max 15m abs change: 1.17% (positive). 1.0% catches
+        # the handful of true bursts seen on 2026-05-18 -- a 1.2% cut was
+        # unreachable for ETH in this regime.
+        pct_change_threshold: 0.010
         require_healthy: true
         quality_epsilon_pct: 0.0005
       liq_cascade:
         enabled: true
         window_minutes: 5
-        # Observed ETH 5m max $3.2M; $2M still ~3x typical 5m print.
-        usd_threshold: 2_000_000
+        # Observed ETH 5m max $3.17M; $3M sits right at the current
+        # peak so a print at all = real flush.
+        usd_threshold: 3_000_000
 
     SOLUSDT:
       # Binance SOL is in an INVERTED regime vs BTC/ETH right now: 7d
@@ -265,22 +279,27 @@ signals:
       lsr_extreme:
         enabled: true
         # Observed SOL LSR range 2026-05-18: 1.63-1.76. 2.20 unreachable.
-        long_heavy_above: 2.00
-        short_heavy_below: 0.75
+        # Asymmetric calibration:
+        #   long_heavy_above 1.80: just above today's max 1.76 -- fires
+        #     when SOL longs really pile in (SHORT signal).
+        #   short_heavy_below 1.00: SOL stays long-skewed, so 1.0 is the
+        #     real stress signal for shorts crowding (LONG signal).
+        long_heavy_above: 1.80
+        short_heavy_below: 1.00
       oi_surge:
         enabled: true
         window_minutes: 15
-        # Observed SOL max 15m abs change: 1.34%. 1.0% catches the
-        # ~30 true bursts on 2026-05-18 (SOL OI churns faster than BTC).
+        # Observed SOL max 15m abs change: 1.34%. 1.0% catches the ~5
+        # true bursts on 2026-05-18.
         pct_change_threshold: 0.010      # 1.0% / 15min (was 3.0% / 1h)
         require_healthy: true
         quality_epsilon_pct: 0.0005
       liq_cascade:
         enabled: true
         window_minutes: 5
-        # SOL liq-book ~5-10x smaller than BTC; observed 5m max ~$150k
-        # on 2026-05-18. $300k still ~3x typical and prevents alt-coin
-        # micro-liqs from triggering false cascades.
+        # SOL liq-book ~5-10x smaller than BTC; observed 5m max ~$151k
+        # on 2026-05-18. $300k = 2x today's max -- catches a real flush
+        # without triggering on micro-liqs.
         usd_threshold: 300_000
 
 # ─── Exit rules (applied to the "virtual" position the bot tracks) ──────────

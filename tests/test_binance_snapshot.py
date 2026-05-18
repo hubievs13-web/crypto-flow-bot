@@ -415,10 +415,10 @@ async def test_build_snapshot_dry_run_validates_inactive_15m_example_config():
     )
 
     assert isinstance(snap, Snapshot)
-    # With regime_timeframe="1h" != timeframe_short="15m" the regime
-    # klines are pulled as a separate call (short + regime + 4h).
-    assert client.klines.await_count == 3
-    short_call, regime_call, call_4h = client.klines.await_args_list
+    # With regime_timeframe == timeframe_short ("15m"), build_snapshot
+    # reuses one klines call for both axes -- only short + 4h are made.
+    assert client.klines.await_count == 2
+    short_call, call_4h = client.klines.await_args_list
     assert short_call.args[1] == "15m"
     assert short_call.kwargs["limit"] == _short_klines_limit(
         ema_period=cfg.signals.trend_filter.ema_period,
@@ -426,7 +426,6 @@ async def test_build_snapshot_dry_run_validates_inactive_15m_example_config():
         atr_period=cfg.signals.trend_filter.atr_period,
         cvd_window_bars=cfg.signals.taker_confirmation.cvd_window_bars,
     )
-    assert regime_call.args[1] == "1h"
     assert call_4h.args[1] == "4h"
     expected_4h_limit = (
         cfg.signals.trend_filter.ema_period

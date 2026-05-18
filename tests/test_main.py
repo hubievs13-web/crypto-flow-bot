@@ -182,8 +182,8 @@ def test_persist_decision_summary_writes_required_schema_before_reset(tmp_path):
         payload = cast(Any, bot.logger).write_decision_summary.await_args.args[0]
         assert payload["event_type"] == "decision_summary"
         assert payload["timeframe_short"] == "15m"
-        # README intent: regime stays on 1h even when entry tf is 15m.
-        assert payload["regime_timeframe"] == "1h"
+        # Regime axis aligned with 15m entry axis for current calibration.
+        assert payload["regime_timeframe"] == "15m"
         for key in (
             "total_candidates",
             "long_candidates",
