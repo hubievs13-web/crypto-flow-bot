@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from crypto_flow_bot.config import (
     Config,
@@ -161,7 +162,7 @@ def _cfg(funding_cfg: FundingExtremeCfg) -> Config:
 
 
 def _snap(**fields) -> Snapshot:
-    base = {
+    base: dict[str, Any] = {
         "symbol": "BTCUSDT",
         "ts": datetime.now(tz=UTC),
         "price": 100.0,

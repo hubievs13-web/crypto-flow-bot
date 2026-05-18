@@ -1,4 +1,5 @@
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from crypto_flow_bot.config import (
     Config,
@@ -30,7 +31,7 @@ def _base_cfg(**signals_kw) -> Config:
 
 
 def _snap(**overrides) -> Snapshot:
-    base = {"symbol": "BTCUSDT", "ts": datetime.now(tz=UTC), "price": 50000.0}
+    base: dict[str, Any] = {"symbol": "BTCUSDT", "ts": datetime.now(tz=UTC), "price": 50000.0}
     base.update(overrides)
     return Snapshot(**base)
 
@@ -312,7 +313,7 @@ def test_rules_split_across_directions_not_strong_for_either():
 
 
 def test_downgrades_do_not_leak_into_fired_rules_or_reason():
-    """After P0-1, taker_confirmation / trend_4h / slope_1h / slope_4h
+    """After P0-1, taker_confirmation / trend_regime / slope_regime
     must land in `entry_downgrades`, not `fired_rules` or `reason`."""
     from crypto_flow_bot.config import (
         LiqCascadeCfg,
@@ -325,9 +326,7 @@ def test_downgrades_do_not_leak_into_fired_rules_or_reason():
     from crypto_flow_bot.engine.signals import evaluate
 
     cfg = _base_cfg(
-        taker_confirmation=TakerConfirmationCfg(
-            enabled=True, dominance_threshold=0.55
-        ),
+        taker_confirmation=TakerConfirmationCfg(enabled=True, bullish_threshold=0.55, bearish_threshold=0.45),
         trend_filter=TrendFilterCfg(
             enabled=True,
             require_4h_alignment=True,
@@ -338,11 +337,11 @@ def test_downgrades_do_not_leak_into_fired_rules_or_reason():
         lsr_extreme=LsrExtremeCfg(enabled=True),
     )
     # LSR triggers SHORT; taker is buy-dominant (bad for SHORT) -> downgrade.
-    # 4h trend is misaligned with SHORT -> trend_4h downgrade.
+    # Regime trend is misaligned with SHORT -> trend_regime downgrade.
     snap = _snap(
         long_short_ratio=2.7,
         taker_buy_dominance_1h=0.80,
-        ema50_4h=90.0,  # price 100, 4h ema below -> uptrend; SHORT misaligned
+        ema50_1h=90.0,  # price 100, regime ema below -> uptrend; SHORT misaligned
     )
     out = evaluate(snap, cfg)
     assert out, "candidate must survive downgrade-only pass"
@@ -352,14 +351,14 @@ def test_downgrades_do_not_leak_into_fired_rules_or_reason():
     assert "lsr_extreme" in fired_names
     assert "taker_confirmation" not in fired_names, \
         "taker_confirmation must be a downgrade, not a fired rule"
-    assert "trend_4h" not in fired_names, \
-        "trend_4h must be a downgrade, not a fired rule"
+    assert "trend_regime" not in fired_names, \
+        "trend_regime must be a downgrade, not a fired rule"
     assert "taker_confirmation" in dg_names
-    assert "trend_4h" in dg_names
+    assert "trend_regime" in dg_names
     assert cand.is_strong is False, "downgrades must force is_strong=False"
     # reason_label is derived from fired_rules only.
     assert "taker_confirmation" not in cand.reason_label
-    assert "trend_4h" not in cand.reason_label
+    assert "trend_regime" not in cand.reason_label
 
 
 # ─── Per-symbol threshold overrides ────────────────────────────────────────

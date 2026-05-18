@@ -30,7 +30,15 @@ log = logging.getLogger(__name__)
 # in config, a candidate built only from these rules is dropped.
 CONFIRMATION_REQUIRED_RULES: frozenset[str] = frozenset({"funding_extreme", "predicted_funding_extreme"})
 DOWNGRADE_RULES: frozenset[str] = frozenset(
-    {"taker_confirmation", "trend_regime", "slope_regime"}
+    {
+        "taker_confirmation",
+        "trend_regime",
+        "slope_regime",
+        # legacy downgrade labels kept for backwards compatibility in logs/state
+        "trend_4h",
+        "slope_1h",
+        "slope_4h",
+    }
 )
 
 
@@ -602,5 +610,6 @@ def evaluate(
                     )
                     if tf.hard_block_on_slope:
                         drop = True
+        if not drop:
             kept.append(cand)
     return kept

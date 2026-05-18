@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from unittest.mock import AsyncMock
 
 from crypto_flow_bot.config import (
@@ -31,7 +32,7 @@ from crypto_flow_bot.main import Bot
 
 
 def _snap(**kw) -> Snapshot:
-    base = {
+    base: dict[str, Any] = {
         "symbol": "BTCUSDT",
         "ts": datetime.now(tz=UTC),
         "price": 100.0,
@@ -119,10 +120,10 @@ def test_ema_slope_actually_computed_with_sufficient_klines() -> None:
 # ─── P0-6 ─────────────────────────────────────────────────────────────────
 
 
-def test_hard_block_on_4h_drops_misaligned_short() -> None:
+def test_hard_block_on_regime_trend_drops_misaligned_short() -> None:
     cfg = _base_cfg(trend_filter=TrendFilterCfg(hard_block_on_4h=True))
-    # LSR triggers SHORT but 4h EMA is below price -> uptrend -> SHORT misaligned.
-    snap = _snap(long_short_ratio=2.7, ema50_4h=90.0)
+    # LSR triggers SHORT but regime EMA is below price -> uptrend -> SHORT misaligned.
+    snap = _snap(long_short_ratio=2.7, ema50_1h=90.0)
     out = evaluate(snap, cfg)
     assert all(c.direction is not Direction.SHORT for c in out), \
         "hard_block_on_4h must drop the candidate entirely, not just downgrade"

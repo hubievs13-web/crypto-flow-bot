@@ -213,7 +213,7 @@ def test_entry_alert_renders_downgrades_section():
         confluence_window_rules={"lsr_extreme"},
         entry_downgrades=[
             FiredRule(name="taker_confirmation", description="taker n/c (40.0%)"),
-            FiredRule(name="trend_4h", description="trend_4h n/a"),
+            FiredRule(name="trend_regime", description="trend_regime n/a"),
         ],
     )
     pos = Position(
@@ -222,12 +222,12 @@ def test_entry_alert_renders_downgrades_section():
         reason="lsr_extreme", stop_loss_price=101.0,
         initial_stop_loss_price=101.0,
         entry_strength="weak",
-        entry_downgrades=["taker_confirmation", "trend_4h"],
+        entry_downgrades=["taker_confirmation", "trend_regime"],
     )
     alert = format_entry_alert(cand, pos, cfg)
     assert "<b>Downgrades:</b>" in alert.text
     assert "taker n/c" in alert.text
-    assert "trend_4h n/a" in alert.text
+    assert "trend_regime n/a" in alert.text
     assert "STRONG" not in alert.text
 
 
@@ -282,7 +282,7 @@ def test_startup_advertises_atr_based_sl_when_atr_enabled():
     text = alert.text
     # ATR-based SL/TP shown, not a fixed percent as the headline number.
     assert "1.5×ATR" in text
-    assert "ATR(1h)" in text
+    assert "ATR(15m)" in text
     # Headline SL is the ATR multiplier, not the fixed percent.
     assert "<b>Exits:</b> SL 1.5×ATR" in text
     assert "<b>Exits:</b> SL 1.50%" not in text

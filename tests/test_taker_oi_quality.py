@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from typing import Any
 
 from crypto_flow_bot.config import Config, SignalsCfg
 from crypto_flow_bot.data.binance import _classify_oi_quality, _cvd_window_usd, _taker_buy_dominance
@@ -14,7 +15,7 @@ def _cfg(*, require_healthy: bool = True) -> Config:
 
 
 def _snap(**overrides) -> Snapshot:
-    base = {"symbol": "BTCUSDT", "ts": datetime.now(tz=UTC), "price": 50_000.0}
+    base: dict[str, Any] = {"symbol": "BTCUSDT", "ts": datetime.now(tz=UTC), "price": 50_000.0}
     base.update(overrides)
     return Snapshot(**base)
 
