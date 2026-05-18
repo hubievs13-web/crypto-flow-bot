@@ -54,3 +54,9 @@ def test_regime_timeframe_accepts_15m_and_default_is_15m() -> None:
     override_cfg = Config(symbols=["BTCUSDT"], signals=SignalsCfg(regime=RegimeCfg(timeframe="15m")))
     assert default_cfg.signals.regime.timeframe == "15m"
     assert override_cfg.signals.regime.timeframe == "15m"
+
+
+def test_15m_time_windows_defaults_are_conservative() -> None:
+    cfg = Config(symbols=["BTCUSDT"])
+    assert cfg.signals.confluence_window_minutes == 15
+    assert cfg.exits.reason_invalidation.momentum_window_minutes == 15

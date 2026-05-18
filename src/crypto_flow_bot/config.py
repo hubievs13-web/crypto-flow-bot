@@ -216,7 +216,7 @@ class SignalsCfg(BaseModel):
     # confluence (legacy behavior). Default 30 lets a slow trigger like
     # `funding_extreme` team up with a fast trigger like `liq_cascade` that
     # arrived a few minutes earlier.
-    confluence_window_minutes: int = 30
+    confluence_window_minutes: int = 15
 
     # When True, a snapshot that fires ONLY `funding_extreme` (with no other
     # rule in the confluence window) does NOT produce a candidate. Funding
@@ -302,7 +302,7 @@ class ReasonInvalidationCfg(BaseModel):
     # price has clearly reversed against the trade in the first window
     # minutes. This stops us bleeding into the time-stop on broken setups.
     momentum_reversal_pct: float = 0.005     # exit at BE if price moves this far against entry
-    momentum_window_minutes: int = 60        # ...within this window after entry
+    momentum_window_minutes: int = 15        # ...within this window after entry
 
 
 class AtrSizingCfg(BaseModel):

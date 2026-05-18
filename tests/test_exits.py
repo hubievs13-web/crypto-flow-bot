@@ -277,7 +277,7 @@ def test_lsr_long_reason_invalidation_symmetry():
 def test_momentum_reversal_invalidates_oi_surge_long():
     """LONG opened on oi_surge — price drops 0.6% in first 30m → bail out."""
     cfg = _cfg()
-    pos = _long_position(entry=100.0, age_minutes=30, reason="oi_surge")
+    pos = _long_position(entry=100.0, age_minutes=10, reason="oi_surge")
     # Drop 0.6% — beyond default 0.5% threshold, but still above SL.
     events = evaluate_exit(pos, _snap(99.4), cfg)
     invalidated = [e for e in events if e.kind == "REASON_INVALIDATED"]
@@ -289,7 +289,7 @@ def test_momentum_reversal_invalidates_oi_surge_long():
 def test_momentum_reversal_invalidates_liq_cascade_short():
     """SHORT opened on liq_cascade — price pumps 0.6% in first 45m → bail out."""
     cfg = _cfg()
-    pos = _short_position(entry=100.0, age_minutes=45, reason="liq_cascade")
+    pos = _short_position(entry=100.0, age_minutes=10, reason="liq_cascade")
     events = evaluate_exit(pos, _snap(100.6), cfg)
     invalidated = [e for e in events if e.kind == "REASON_INVALIDATED"]
     assert len(invalidated) == 1
@@ -299,7 +299,7 @@ def test_momentum_reversal_invalidates_liq_cascade_short():
 def test_momentum_reversal_below_threshold_does_not_invalidate():
     """0.3% reverse (below 0.5% threshold) is just noise."""
     cfg = _cfg()
-    pos = _long_position(entry=100.0, age_minutes=30, reason="oi_surge")
+    pos = _long_position(entry=100.0, age_minutes=10, reason="oi_surge")
     events = evaluate_exit(pos, _snap(99.7), cfg)
     assert not any(e.kind == "REASON_INVALIDATED" for e in events)
 
