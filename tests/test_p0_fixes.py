@@ -123,7 +123,7 @@ def test_ema_slope_actually_computed_with_sufficient_klines() -> None:
 def test_hard_block_on_regime_trend_drops_misaligned_short() -> None:
     cfg = _base_cfg(trend_filter=TrendFilterCfg(hard_block_on_4h=True))
     # LSR triggers SHORT but regime EMA is below price -> uptrend -> SHORT misaligned.
-    snap = _snap(long_short_ratio=2.7, ema50_1h=90.0)
+    snap = _snap(long_short_ratio=2.7, regime_ema=90.0)
     out = evaluate(snap, cfg)
     assert all(c.direction is not Direction.SHORT for c in out), \
         "hard_block_on_4h must drop the candidate entirely, not just downgrade"
@@ -132,7 +132,7 @@ def test_hard_block_on_regime_trend_drops_misaligned_short() -> None:
 def test_hard_block_on_slope_drops_misaligned_long() -> None:
     cfg = _base_cfg(trend_filter=TrendFilterCfg(hard_block_on_slope=True))
     # LSR triggers LONG but 1h slope is -0.5% / 6h -> misaligned -> drop.
-    snap = _snap(long_short_ratio=0.5, ema50_slope_1h=-0.005)
+    snap = _snap(long_short_ratio=0.5, regime_slope=-0.005)
     out = evaluate(snap, cfg)
     assert all(c.direction is not Direction.LONG for c in out), \
         "hard_block_on_slope must drop the candidate entirely"

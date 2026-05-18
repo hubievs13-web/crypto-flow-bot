@@ -341,7 +341,7 @@ def test_downgrades_do_not_leak_into_fired_rules_or_reason():
     snap = _snap(
         long_short_ratio=2.7,
         taker_buy_dominance_1h=0.80,
-        ema50_1h=90.0,  # price 100, regime ema below -> uptrend; SHORT misaligned
+        regime_ema=90.0,  # price 100, regime ema below -> uptrend; SHORT misaligned
     )
     out = evaluate(snap, cfg)
     assert out, "candidate must survive downgrade-only pass"

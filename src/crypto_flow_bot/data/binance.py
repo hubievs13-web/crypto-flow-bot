@@ -455,6 +455,9 @@ async def build_snapshot(
     price_change_pct_1h, ema50_1h, atr_1h, ema50_slope_1h = _kline_derivatives(
         klines_1h, slope_window_bars=slope_window_bars, atr_period=atr_period, ema_period=ema_period
     )
+    _, regime_ema, _, regime_slope = _kline_derivatives(
+        klines_regime, slope_window_bars=slope_window_bars, atr_period=atr_period, ema_period=ema_period
+    )
     taker_buy_1h, taker_sell_1h = _taker_quote_volumes(klines_1h)
     taker_buy_dominance_1h = _taker_buy_dominance(taker_buy_1h, taker_sell_1h)
     cvd_window_usd = _cvd_window_usd(klines_1h, cvd_window_bars)
@@ -516,6 +519,8 @@ async def build_snapshot(
         ema50_1h=ema50_1h,
         ema50_slope_1h=ema50_slope_1h,
         atr_1h=atr_1h,
+        regime_ema=regime_ema,
+        regime_slope=regime_slope,
         regime=regime,
         adx_1h=adx_1h,
         atr_pct_1h=atr_pct_1h,

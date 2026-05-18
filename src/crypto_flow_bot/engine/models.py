@@ -51,6 +51,10 @@ class Snapshot:
     ema50_1h: float | None = None             # EMA(50) on 1h closes
     ema50_slope_1h: float | None = None       # (ema_now - ema_prev_window) / ema_prev_window
     atr_1h: float | None = None               # ATR(14) on 1h bars, in absolute price units
+    # Regime-timeframe trend fields used by active signal gating on the
+    # default 15m runtime path.
+    regime_ema: float | None = None
+    regime_slope: float | None = None
 
     # Taker buy/sell *quote* volume on the last fully-closed 1h bar, in USDT.
     # Sourced from the Binance kline fields takerBuyQuoteVolume and the bar's
