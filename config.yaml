@@ -35,7 +35,7 @@ signals:
   #      fires moments later.
   #   2. `funding_extreme_requires_confirmation` (below) drops funding-only
   #      candidates unless something else in this window agrees with them.
-  confluence_window_minutes: 30
+  confluence_window_minutes: 15
 
   # Funding-only entries lose money in our logs (-3.98% net across 23 trades),
   # because funding can stay extreme for days without a turn. Require at
