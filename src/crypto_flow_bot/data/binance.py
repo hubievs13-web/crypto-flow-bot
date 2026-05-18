@@ -406,10 +406,11 @@ async def build_snapshot(
     `liq_stream.totals(symbol)` already aggregates across every enabled
     exchange (see `crypto_flow_bot.data.liquidations.LiquidationStream`).
 
-    When `enable_4h_klines` is True (default), the snapshot also includes
-    4h EMA50 / ATR(14) / price-change derivatives, used by the higher-TF
-    trend filter in PR-4. Set False to skip the extra REST call when the
-    filter is disabled in config.
+    When `enable_4h_klines` is True, the snapshot also includes
+    4h EMA50 / ATR(14) / price-change derivatives. Default is False --
+    the live signal path uses the configurable `regime_timeframe`
+    (see `klines_regime` below) and no longer depends on the dedicated
+    4h pull. Tests still flip this on to exercise the 4h branch.
     """
     fetch_ts = datetime.now(tz=UTC)
     funding = await client.funding_rate(symbol)

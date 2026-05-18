@@ -415,6 +415,8 @@ async def test_build_snapshot_dry_run_validates_inactive_15m_example_config():
     )
 
     assert isinstance(snap, Snapshot)
+    # With regime_timeframe == timeframe_short ("15m"), build_snapshot
+    # reuses one klines call for both axes -- only short + 4h are made.
     assert client.klines.await_count == 2
     short_call, call_4h = client.klines.await_args_list
     assert short_call.args[1] == "15m"
