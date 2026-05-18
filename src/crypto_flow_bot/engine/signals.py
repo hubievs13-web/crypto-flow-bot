@@ -30,7 +30,7 @@ log = logging.getLogger(__name__)
 # in config, a candidate built only from these rules is dropped.
 CONFIRMATION_REQUIRED_RULES: frozenset[str] = frozenset({"funding_extreme", "predicted_funding_extreme"})
 DOWNGRADE_RULES: frozenset[str] = frozenset(
-    {"taker_confirmation", "trend_4h", "slope_1h", "slope_4h"}
+    {"taker_confirmation", "trend_regime", "slope_regime"}
 )
 
 
@@ -549,8 +549,9 @@ def evaluate(
             buy_dominance = cand.snapshot.taker_buy_dominance_1h
             if buy_dominance is None:
                 continue
+            threshold = sig.taker_confirmation.bullish_threshold if cand.direction is Direction.LONG else (1.0 - sig.taker_confirmation.bearish_threshold)
             side_dominance = buy_dominance if cand.direction is Direction.LONG else 1.0 - buy_dominance
-            if side_dominance >= sig.taker_confirmation.dominance_threshold:
+            if side_dominance >= threshold:
                 continue
             cand.strong_override = False
             cand.entry_downgrades.append(
@@ -574,18 +575,18 @@ def evaluate(
             kept.append(cand)
             continue
         drop = False
-        if tf.require_4h_alignment and cand.snapshot.ema50_4h is not None:
+        if cand.snapshot.ema50_1h is not None:
             miss = (
-                cand.direction is Direction.LONG and cand.snapshot.price <= cand.snapshot.ema50_4h
+                cand.direction is Direction.LONG and cand.snapshot.price <= cand.snapshot.ema50_1h
             ) or (
-                cand.direction is Direction.SHORT and cand.snapshot.price >= cand.snapshot.ema50_4h
+                cand.direction is Direction.SHORT and cand.snapshot.price >= cand.snapshot.ema50_1h
             )
             if miss:
                 cand.strong_override = False
-                cand.entry_downgrades.append(FiredRule(name="trend_4h", description="trend_4h n/a"))
+                cand.entry_downgrades.append(FiredRule(name="trend_regime", description="trend_regime n/a"))
                 if tf.hard_block_on_4h:
                     drop = True
-        if tf.require_1h_slope_alignment and cand.snapshot.ema50_slope_1h is not None:
+        if cand.snapshot.ema50_slope_1h is not None:
             s1 = cand.snapshot.ema50_slope_1h
             if abs(s1) >= tf.slope_min_abs:
                 miss = (cand.direction is Direction.LONG and s1 <= 0) or (
@@ -595,28 +596,11 @@ def evaluate(
                     cand.strong_override = False
                     cand.entry_downgrades.append(
                         FiredRule(
-                            name="slope_1h",
-                            description=f"slope_1h n/a ({s1 * 100:+.2f}%/{tf.slope_window_bars}h)",
+                            name="slope_regime",
+                            description=f"slope_regime n/a ({s1 * 100:+.2f}%/{tf.slope_window_bars} bars)",
                         )
                     )
                     if tf.hard_block_on_slope:
                         drop = True
-        if tf.require_4h_slope_alignment and cand.snapshot.ema50_slope_4h is not None:
-            s4 = cand.snapshot.ema50_slope_4h
-            if abs(s4) >= tf.slope_min_abs:
-                miss = (cand.direction is Direction.LONG and s4 <= 0) or (
-                    cand.direction is Direction.SHORT and s4 >= 0
-                )
-                if miss:
-                    cand.strong_override = False
-                    cand.entry_downgrades.append(
-                        FiredRule(
-                            name="slope_4h",
-                            description=f"slope_4h n/a ({s4 * 100:+.2f}%/{tf.slope_window_bars_4h * 4}h)",
-                        )
-                    )
-                    if tf.hard_block_on_slope:
-                        drop = True
-        if not drop:
             kept.append(cand)
     return kept

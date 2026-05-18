@@ -71,7 +71,7 @@ class PredictedFundingCfg(BaseModel):
 
 class RegimeCfg(BaseModel):
     enabled: bool = True
-    timeframe: Literal["1h", "15m"] = "1h"
+    timeframe: Literal["1h", "15m"] = "15m"
     adx_period: int = 14
     trend_adx_threshold: float = 25
     range_adx_threshold: float = 20
@@ -81,7 +81,7 @@ class RegimeCfg(BaseModel):
 
 class OiSurgeCfg(BaseModel):
     enabled: bool = True
-    window_minutes: int = 60
+    window_minutes: int = 15
     pct_change_threshold: float = 0.05
     require_healthy: bool = True
     quality_epsilon_pct: float = 0.0005
@@ -89,8 +89,9 @@ class OiSurgeCfg(BaseModel):
 
 class TakerConfirmationCfg(BaseModel):
     enabled: bool = True
-    dominance_threshold: float = 0.55
-    cvd_window_bars: int = Field(default=6, ge=1)
+    bullish_threshold: float = Field(default=0.55, ge=0.0, le=1.0)
+    bearish_threshold: float = Field(default=0.45, ge=0.0, le=1.0)
+    cvd_window_bars: int = Field(default=24, ge=1)
     cvd_alignment_required: bool = False
 
 
@@ -124,15 +125,15 @@ class TrendFilterCfg(BaseModel):
     """Trend/slope alignment gates for candidate strength."""
 
     enabled: bool = True
-    ema_period: int = 50                 # EMA period for both 1h and 4h derivatives.
+    ema_period: int = 200                 # EMA period for both 1h and 4h derivatives.
     require_alignment: bool = True       # Legacy 1h EMA-side gate.
     exempt_rules: list[str] = Field(default_factory=lambda: ["liq_cascade"])
     require_4h_alignment: bool = True
     require_1h_slope_alignment: bool = True
     require_4h_slope_alignment: bool = False
-    slope_window_bars: int = Field(default=6, ge=1)
+    slope_window_bars: int = Field(default=24, ge=1)
     slope_window_bars_4h: int = Field(default=6, ge=1)
-    atr_period: int = Field(default=14, ge=1)
+    atr_period: int = Field(default=56, ge=1)
     slope_min_abs: float = 0.0005
     hard_block_on_4h: bool = False
     hard_block_on_slope: bool = False
@@ -198,7 +199,7 @@ class SymbolOverridesCfg(BaseModel):
 
 
 class SignalsCfg(BaseModel):
-    timeframe_short: Literal["1h", "15m"] = "1h"
+    timeframe_short: Literal["1h", "15m"] = "15m"
     funding_extreme: FundingExtremeCfg = Field(default_factory=FundingExtremeCfg)
     oi_surge: OiSurgeCfg = Field(default_factory=OiSurgeCfg)
     lsr_extreme: LsrExtremeCfg = Field(default_factory=LsrExtremeCfg)
@@ -330,7 +331,7 @@ class ExitsCfg(BaseModel):
         default_factory=lambda: [TpLevel(pct=0.015, fraction=0.5), TpLevel(pct=0.030, fraction=0.5)]
     )
     trailing: TrailingCfg = Field(default_factory=TrailingCfg)
-    time_stop_minutes: int = 480
+    time_stop_minutes: int = 120
     reason_invalidation: ReasonInvalidationCfg = Field(default_factory=ReasonInvalidationCfg)
     atr_sizing: AtrSizingCfg = Field(default_factory=AtrSizingCfg)
 
@@ -374,7 +375,7 @@ class RiskCfg(BaseModel):
     # when the metric is still oscillating around its threshold. Observed
     # in logs as <30-minute re-entries that repeated the same losing setup.
     # 0 disables.
-    post_exit_cooldown_seconds: int = 7200  # 2h
+    post_exit_cooldown_seconds: int = 1800  # 2h
 
     # How often the entry path is allowed to emit the same skip-reason log
     # line for the same (symbol, direction). Stops `skipping ... at
@@ -440,7 +441,7 @@ class Config(BaseModel):
     # window every `liq_fast_check_interval_seconds` and fast-paths a
     # snapshot + alert when the per-symbol usd_threshold is crossed.
     liq_fast_check_interval_seconds: int = 5
-    alert_cooldown_seconds: int = 1800
+    alert_cooldown_seconds: int = 450
     signals: SignalsCfg = Field(default_factory=SignalsCfg)
     exits: ExitsCfg = Field(default_factory=ExitsCfg)
     notifier: NotifierCfg = Field(default_factory=NotifierCfg)
