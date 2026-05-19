@@ -123,17 +123,17 @@ To override only some fields, copy `config.yaml` to `config.local.yaml`, edit, a
 ---
 
 
-### Optional inactive 15m preset (future use)
+### Active 15m runtime config and example preset
 
-The default runtime config remains **1h** (`config.yaml`).
+The active default runtime config is `config.yaml`, and it now runs the short-timeframe signal axis on **15m** (`signals.timeframe_short: "15m"`).
 
-For future dry-runs/backtests, use `configs/config.15m.example.yaml` as a manual starting point. It is **not active by default** and nothing in runtime switches to it automatically.
+`configs/config.15m.example.yaml` is an optional minimal example for dry-runs/backtests or local overrides. It is not a separate pending migration preset; the main runtime config has already migrated to 15m.
 
-Preset intent (preserve the original strategy horizon while sampling faster bars):
-- EMA50 on 1h ≈ EMA200 on 15m
-- ATR14 on 1h ≈ ATR56 on 15m
-- 6-bar 1h slope/CVD ≈ 24-bar 15m slope/CVD
-- Regime stays on 1h (`signals.regime.timeframe: "1h"`)
+Current 15m calibration intent (preserve the legacy strategy horizon while sampling faster bars):
+- legacy EMA50 on 1h ≈ EMA200 on 15m
+- legacy ATR14 on 1h ≈ ATR56 on 15m
+- legacy 6-bar 1h slope/CVD ≈ 24-bar 15m slope/CVD
+- regime axis is aligned with entries on 15m (`signals.regime.timeframe: "15m"`)
 
 ## Operational notes
 

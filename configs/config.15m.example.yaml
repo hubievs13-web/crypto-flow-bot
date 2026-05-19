@@ -1,5 +1,5 @@
-# Inactive example preset for future 15m dry-runs/backtests.
-# NOT loaded automatically. Default runtime remains `config.yaml` (1h).
+# Minimal 15m example preset for dry-runs/backtests or local overrides.
+# The active default runtime config is `config.yaml`, which is already 15m.
 
 symbols:
   - BTCUSDT
@@ -14,5 +14,5 @@ signals:
     atr_period: 56
   regime:
     # Regime axis tracks entry axis on 15m for fast reaction in this regime.
-    # Switch to "1h" if you prefer the slower README-intended EMA50_1h.
+    # Switch to "1h" only for an explicit legacy slower-regime experiment.
     timeframe: "15m"

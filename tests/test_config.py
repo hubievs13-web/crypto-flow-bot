@@ -21,7 +21,7 @@ def test_default_config_yaml_migrates_to_15m_defaults() -> None:
     assert cfg.alert_cooldown_seconds == 1800
 
 
-def test_15m_example_config_parses_and_matches_future_values() -> None:
+def test_15m_example_config_parses_and_matches_current_15m_values() -> None:
     cfg = load_config(Path("configs/config.15m.example.yaml"))
     assert cfg.signals.timeframe_short == "15m"
     assert cfg.signals.trend_filter.ema_period == 200
@@ -30,3 +30,11 @@ def test_15m_example_config_parses_and_matches_future_values() -> None:
     assert cfg.signals.trend_filter.atr_period == 56
     # Regime axis aligned with 15m entry axis for current calibration.
     assert cfg.signals.regime.timeframe == "15m"
+
+
+def test_default_config_yaml_uses_m4_per_symbol_oi_surge_thresholds() -> None:
+    cfg = load_config("config.yaml")
+
+    assert cfg.signals.for_symbol("BTCUSDT").oi_surge.pct_change_threshold == 0.009
+    assert cfg.signals.for_symbol("ETHUSDT").oi_surge.pct_change_threshold == 0.010
+    assert cfg.signals.for_symbol("SOLUSDT").oi_surge.pct_change_threshold == 0.009

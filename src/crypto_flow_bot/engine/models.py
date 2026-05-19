@@ -46,27 +46,29 @@ class Snapshot:
     long_liquidations_usd_window: float = 0.0
     short_liquidations_usd_window: float = 0.0
 
-    # 1h kline derivatives — used for OI alignment, trend filtering, and ATR sizing.
-    price_change_pct_1h: float | None = None  # last fully-closed 1h bar vs the one before
-    ema50_1h: float | None = None             # EMA(50) on 1h closes
+    # Short-timeframe kline derivatives. Field names keep the legacy `_1h`
+    # suffix for log/state compatibility; active `config.yaml` populates them
+    # from 15m bars. Used for OI alignment, trend filtering, and ATR sizing.
+    price_change_pct_1h: float | None = None  # last fully-closed short-TF bar vs the one before
+    ema50_1h: float | None = None             # EMA on configured short-TF closes
     ema50_slope_1h: float | None = None       # (ema_now - ema_prev_window) / ema_prev_window
-    atr_1h: float | None = None               # ATR(14) on 1h bars, in absolute price units
+    atr_1h: float | None = None               # ATR on configured short-TF bars, absolute price units
     # Regime-timeframe trend fields used by active signal gating on the
     # default 15m runtime path.
     regime_ema: float | None = None
     regime_slope: float | None = None
 
-    # Taker buy/sell *quote* volume on the last fully-closed 1h bar, in USDT.
+    # Taker buy/sell *quote* volume on the last fully-closed short-TF bar, in USDT.
     # Sourced from the Binance kline fields takerBuyQuoteVolume and the bar's
     # total quote volume — the difference is taker sell. Used by PR-3 to
     # confirm aggressor side (LONG needs taker buy dominance, SHORT vice-versa).
     taker_buy_quote_1h: float | None = None
     taker_sell_quote_1h: float | None = None
-    taker_buy_dominance_1h: float | None = None  # buy / (buy + sell) on last closed 1h bar, in [0, 1]
-    cvd_window_usd: float | None = None          # rolling sum of (taker_buy - taker_sell) over last N closed 1h bars
+    taker_buy_dominance_1h: float | None = None  # buy / (buy + sell) on last closed short-TF bar, in [0, 1]
+    cvd_window_usd: float | None = None          # rolling sum of (taker_buy - taker_sell) over last N closed short-TF bars
     oi_quality: str | None = None                # healthy_long/healthy_short/dangerous_long/dangerous_short
 
-    # 4h kline derivatives — same shape as the 1h block, used by PR-4 for
+    # 4h kline derivatives — same shape as the short-TF block, used for
     # higher-timeframe trend confirmation and EMA-slope checks. None when the
     # 4h fetch failed or returned fewer than 51 bars.
     price_change_pct_4h: float | None = None  # last fully-closed 4h bar vs the one before
@@ -182,9 +184,10 @@ class Position:
     # rows in alerts.jsonl / positions.jsonl / blocked.jsonl can be joined.
     signal_id: str | None = None
 
-    # ATR(1h) at entry time, used by ATR-based trailing-stop activation. None
-    # when ATR was unavailable on the entry snapshot (rare; only when 1h
-    # klines failed to load).
+    # Entry ATR from the configured short timeframe, used by ATR-based
+    # trailing-stop activation. Field name keeps the legacy `_1h` suffix for
+    # log/state compatibility. None when ATR was unavailable on the entry
+    # snapshot (rare; only when klines failed to load).
     entry_atr_1h: float | None = None
 
     def to_log_dict(self) -> dict:

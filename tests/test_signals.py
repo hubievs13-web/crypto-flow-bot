@@ -175,7 +175,7 @@ def test_oi_surge_up_with_price_down_yields_short_signal():
 
 
 def test_oi_surge_without_price_data_does_not_fire():
-    # OI surge needs the 1h price-change to pick a side; without it the rule must skip.
+    # OI surge needs the short-timeframe price-change to pick a side; without it the rule must skip.
     snap = _snap(open_interest_change_pct_window=0.07, price_change_pct_1h=None)
     out = evaluate(snap, _cfg())
     assert all(not any(r.name == "oi_surge" for r in c.fired_rules) for c in out)
