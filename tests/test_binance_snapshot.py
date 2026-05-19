@@ -159,8 +159,8 @@ async def test_build_snapshot_populates_freshness_timestamps():
 
 @pytest.mark.anyio
 async def test_build_snapshot_populates_4h_kline_derivatives_when_enabled():
-    """With `enable_4h_klines=True` (default), `klines` is called twice
-    (once for 1h, once for 4h) and the snapshot carries 4h EMA/ATR/pct fields."""
+    """With `enable_4h_klines=True`, `klines` is called twice
+    (once for short timeframe, once for 4h) and snapshot carries 4h fields."""
     client = AsyncMock()
     client.funding_rate.return_value = 0.0
     client.open_interest_usd.return_value = 1_000_000.0
@@ -186,8 +186,8 @@ async def test_build_snapshot_populates_4h_kline_derivatives_when_enabled():
 
 @pytest.mark.anyio
 async def test_build_snapshot_skips_4h_when_disabled():
-    """With `enable_4h_klines=False` only the 1h kline call happens and
-    the 4h fields are left as None — saves one REST roundtrip per cycle."""
+    """With `enable_4h_klines=False` only the short-timeframe kline call
+    happens and the 4h fields are left as None — saves one REST roundtrip."""
     client = AsyncMock()
     client.funding_rate.return_value = 0.0
     client.open_interest_usd.return_value = 1_000_000.0
@@ -211,9 +211,9 @@ async def test_build_snapshot_skips_4h_when_disabled():
 
 
 @pytest.mark.anyio
-async def test_build_snapshot_populates_taker_volumes_from_1h_kline():
-    """taker_buy_quote_1h / taker_sell_quote_1h must be sourced from the
-    last fully-closed 1h bar (not the in-progress one) and sum to total qv."""
+async def test_build_snapshot_populates_taker_volumes_from_short_tf_kline():
+    """Legacy `_1h` taker fields are sourced from the last fully-closed
+    short-timeframe bar (not the in-progress one) and sum to total qv."""
     # Build 52 bars; second-to-last (index 50) is the last fully-closed.
     bars = [_kline_row(100.0 + i, total_qv="0", taker_buy_qv="0") for i in range(52)]
     # The bar we care about is bars[-2].
@@ -385,7 +385,7 @@ async def test_top_long_short_position_ratio_parses_valid_value():
 
 
 @pytest.mark.anyio
-async def test_build_snapshot_dry_run_validates_inactive_15m_example_config():
+async def test_build_snapshot_dry_run_validates_15m_example_config():
     cfg = load_config(Path("configs/config.15m.example.yaml"))
 
     client = AsyncMock()
@@ -491,7 +491,7 @@ async def test_build_snapshot_uses_separate_short_and_4h_limits_and_slope_window
 
 
 @pytest.mark.anyio
-async def test_build_snapshot_default_mode_keeps_1h_and_4h_limits_at_61():
+async def test_build_snapshot_default_mode_keeps_short_tf_and_4h_limits_distinct():
     client = AsyncMock()
     client.funding_rate.return_value = 0.0
     client.open_interest_usd.return_value = 1_000_000.0

@@ -47,8 +47,9 @@ def _bot(tmp_path, cfg: Config, liq_totals: dict[str, tuple[float, float]]) -> B
 def _liq_snap(symbol: str, long_usd: float, short_usd: float) -> Snapshot:
     """Snapshot that engine.signals.evaluate() will treat as a liq_cascade fire.
 
-    `atr_1h` is set so `state.open_from_signal` has a valid stop-loss distance.
-    `ema50_1h` is omitted so the trend filter does not block either direction
+    Legacy `atr_1h` is set so `state.open_from_signal` has a valid stop-loss
+    distance. Legacy `ema50_1h` is omitted so the trend filter does not block
+    either direction
     (liq_cascade is exempt from trend filter anyway, but we keep it simple).
     """
     return Snapshot(

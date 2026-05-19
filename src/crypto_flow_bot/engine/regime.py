@@ -1,4 +1,4 @@
-"""1h market-regime helpers (observation-only in this PR)."""
+"""Market-regime helpers for the configured regime timeframe."""
 
 from __future__ import annotations
 

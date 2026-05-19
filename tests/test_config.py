@@ -21,7 +21,7 @@ def test_default_config_yaml_migrates_to_15m_defaults() -> None:
     assert cfg.alert_cooldown_seconds == 1800
 
 
-def test_15m_example_config_parses_and_matches_future_values() -> None:
+def test_15m_example_config_parses_and_matches_current_15m_values() -> None:
     cfg = load_config(Path("configs/config.15m.example.yaml"))
     assert cfg.signals.timeframe_short == "15m"
     assert cfg.signals.trend_filter.ema_period == 200

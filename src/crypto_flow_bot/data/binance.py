@@ -268,7 +268,7 @@ def _kline_derivatives(
 
 
 def _taker_quote_volumes(klines: list[list]) -> tuple[float | None, float | None]:
-    """Extract taker buy / taker sell quote volumes from the last fully-closed 1h kline.
+    """Extract taker buy / taker sell quote volumes from the last fully-closed kline.
 
     Binance kline array indices used:
         [7]  quoteAssetVolume      -- total quote volume on the bar

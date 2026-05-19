@@ -190,7 +190,7 @@ def _check_hard_block_freshness(
     PR fix P0-7: when the freshness gate is in hard-block mode, ANY stale
     critical metric should drop the entire candidate set, not just the matching
     rule. Critical = inputs without which we cannot make any signal decision:
-    funding, OI, LSR, 1h klines (everything else is auxiliary).
+    funding, OI, LSR, short-timeframe klines (everything else is auxiliary).
     Missing ts on a critical metric is also treated as stale per
     `fresh.missing_ts_is_stale` (default True).
     """
@@ -414,8 +414,8 @@ def evaluate(
     ):
         oi_pct = snap.open_interest_change_pct_window
         # OI direction alone is ambiguous (longs and shorts both grow OI), so we
-        # always cross-check the 1h price-change to identify which side opened
-        # the new positions:
+        # always cross-check the short-timeframe price-change to identify
+        # which side opened the new positions:
         #   OI ↑ + price ↑ -> fresh longs  -> LONG
         #   OI ↑ + price ↓ -> fresh shorts -> SHORT
         #   OI ↓ + price ↑ -> short squeeze (skip — already in motion)
@@ -547,7 +547,7 @@ def evaluate(
         )
     # ── taker confirmation gate (PR 3, #12-#14) ─────────────────────────
     # Downgrades is_strong on a candidate whose side does not have taker
-    # aggression confirmation on the last closed 1h bar. Cold-start
+    # aggression confirmation on the last closed short-timeframe bar. Cold-start
     # (taker_buy_dominance_1h is None) is a pass-through. liq_cascade is
     # exempt -- a cascade IS aggression by definition.
     if sig.taker_confirmation.enabled:
@@ -570,7 +570,7 @@ def evaluate(
             )
 
     # ── trend / slope alignment gate (PR 4, #5, #6) ─────────────────────
-    # 4h trend, 1h slope and 4h slope each downgrade is_strong on a
+    # 4h trend, short-timeframe slope and 4h slope each downgrade is_strong on a
     # contradicting candidate, and (when their hard_block_* knob is on)
     # drop the candidate entirely. Rules listed in tf.exempt_rules
     # (e.g. liq_cascade) are skipped. Missing data is always pass-through.

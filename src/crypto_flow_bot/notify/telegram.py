@@ -17,7 +17,7 @@ log = logging.getLogger(__name__)
 
 
 def _short_tf_label(cfg: Config) -> str:
-    """User-facing short timeframe label (defaults to 1h)."""
+    """User-facing short timeframe label from the active config."""
     return cfg.signals.timeframe_short
 
 def _mask_telegram_token(value: Any) -> str:

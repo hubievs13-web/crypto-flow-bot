@@ -93,8 +93,8 @@ signals:
     # 1134 post-migration snapshots/symbol on 2026-05-18 the max abs
     # OI 15m change was BTC 1.59% / ETH 1.92% / SOL 1.34% -- the
     # legacy 2.5%/15min cut was unreachable and the rule fired zero
-    # times all day. 1.2% globally is the safe default for untracked
-    # symbols; tracked symbols get tighter per-symbol overrides below.
+    # times all day. The 1.2% global threshold is only a fallback for
+    # untracked symbols; BTC/ETH/SOL use active M4 overrides below.
     pct_change_threshold: 0.012
     require_healthy: true
     quality_epsilon_pct: 0.0005
@@ -123,7 +123,7 @@ signals:
     # default for any untracked symbol added to symbols: above.
     usd_threshold: 3_000_000
 
-  # 1h EMA trend filter — drops counter-trend signals when the larger trend is clear.
+  # 15m EMA trend filter — drops counter-trend signals when the larger trend is clear.
   # Liquidation cascades are exempt: a long-flush in an uptrend (or short-squeeze
   # in a downtrend) is the highest-EV setup, so we don't filter those out.
   trend_filter:
@@ -160,7 +160,7 @@ signals:
     funding_max_age_seconds: 120          # premiumIndex; 2 × poll_interval
     open_interest_max_age_seconds: 120    # /fapi/v1/openInterest; same
     long_short_ratio_max_age_seconds: 600 # 5-min upstream buckets; allow 10min
-    klines_max_age_seconds: 120           # 1h klines REST fetch
+    klines_max_age_seconds: 120           # short-timeframe/4h klines REST fetches
     predicted_funding_max_age_seconds: 120
 
   predicted_funding:
@@ -181,9 +181,7 @@ signals:
   regime:
     enabled: true
     # 15m regime EMA50 keeps the trend axis on the same timeframe as the
-    # signal axis -- consistent with the 15m migration. README mentioned
-    # 1h as the original design intent, but in current calm regime the
-    # 15m EMA50 is faster to react and a better fit for 15m entries.
+    # signal axis -- consistent with the active 15m runtime migration.
     timeframe: "15m"
     adx_period: 14
     trend_adx_threshold: 25
@@ -308,7 +306,7 @@ signals:
 # The bot does NOT execute orders. It only TELLS you to exit, in three ways.
 
 exits:
-  # Volatility-adaptive SL/TP using 1h ATR(14).
+  # Volatility-adaptive SL/TP using the active short-timeframe ATR (15m ATR56).
   # When enabled and ATR is available, the bot sizes the stop and take-profit
   # ladders by ATR multiples instead of fixed percentages — so SL/TP scale
   # naturally with each symbol's current volatility (BTC tighter on quiet days,
@@ -330,8 +328,8 @@ exits:
   # `lock_in_pct` of profit (move stop to entry + lock_in_pct).
   #
   # `activate_at_atr_mult` is the preferred trigger: trailing activates when
-  # favorable_pct >= (mult × entry_atr_1h) / entry_price, so the trigger
-  # scales with each symbol's actual volatility on entry. The fixed
+  # favorable_pct >= (mult × entry ATR) / entry_price, so the trigger
+  # scales with each symbol's actual short-timeframe volatility on entry. The fixed
   # `activate_at_pct` is used as a fallback when ATR was unavailable at
   # entry time (rare; first poll after a cold start before klines load).
   # Set `activate_at_atr_mult: null` to disable the ATR path entirely.
