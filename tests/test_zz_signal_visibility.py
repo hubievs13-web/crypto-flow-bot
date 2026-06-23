@@ -10,6 +10,7 @@ from crypto_flow_bot.engine.models import Direction, Snapshot
 from crypto_flow_bot.engine.signals import FiredRule, SignalCandidate
 from crypto_flow_bot.engine.state import StateStore
 from crypto_flow_bot.main import Bot, DecisionSummary
+
 from crypto_flow_bot.signal_visibility import install_trade_signal_visibility_patch
 
 
