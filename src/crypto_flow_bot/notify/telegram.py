@@ -27,18 +27,10 @@ class TelegramDeliveryFailure:
     reason: str
 
 
-class TelegramDeliveryError(RuntimeError):
-    """Raised after a broadcast attempts every chat and at least one send fails."""
-
-    def __init__(self, failures: list[TelegramDeliveryFailure], success_count: int) -> None:
-        self.failures = failures
-        self.success_count = success_count
-        failed = ", ".join(f"{failure.chat_id} ({failure.reason})" for failure in failures)
-        success_label = "chat" if success_count == 1 else "chats"
-        super().__init__(
-            f"telegram delivery failed for {len(failures)} chat(s): {failed}; "
-            f"{success_count} {success_label} succeeded"
-        )
+@dataclass(frozen=True)
+class TelegramDeliveryReport:
+    success_count: int
+    failures: tuple[TelegramDeliveryFailure, ...] = ()
 
 
 def _short_tf_label(cfg: Config) -> str:
@@ -80,6 +72,7 @@ class TelegramNotifier:
         if not self.chat_ids:
             raise ValueError("at least one Telegram chat id is required")
         log.info("telegram notifier configured for %d broadcast chat(s)", len(self.chat_ids))
+        self.last_delivery_report = TelegramDeliveryReport(success_count=0)
         self._http = http or httpx.AsyncClient(timeout=10.0)
         self._owns_http = http is None
         self._update_offset: int = 0
@@ -88,7 +81,7 @@ class TelegramNotifier:
         if self._owns_http:
             await self._http.aclose()
 
-    async def send(self, text: str) -> None:
+    async def send(self, text: str) -> TelegramDeliveryReport:
         url = f"https://api.telegram.org/bot{self.token}/sendMessage"
         failures: list[TelegramDeliveryFailure] = []
         success_count = 0
@@ -112,8 +105,15 @@ class TelegramNotifier:
                 reason = _mask_telegram_token(e)
                 failures.append(TelegramDeliveryFailure(chat_id=chat_id, reason=reason))
                 log.warning("telegram send to %s errored: %s", chat_id, reason)
+        report = TelegramDeliveryReport(success_count=success_count, failures=tuple(failures))
+        self.last_delivery_report = report
         if failures:
-            raise TelegramDeliveryError(failures, success_count)
+            failed_ids = ", ".join(failure.chat_id for failure in failures)
+            log.warning(
+                "telegram broadcast delivery issues: failed_chat_ids=%s success_count=%d",
+                failed_ids, success_count,
+            )
+        return report
 
     async def send_to(self, chat_id: str, text: str) -> None:
         """Send a message to a specific chat (used for /start replies)."""
