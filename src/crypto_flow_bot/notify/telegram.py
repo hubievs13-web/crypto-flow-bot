@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Iterable
+from dataclasses import dataclass
+from html import escape
 from typing import Any
 
 import httpx
@@ -15,10 +18,33 @@ from crypto_flow_bot.engine.signals import SignalCandidate
 
 log = logging.getLogger(__name__)
 
+_CHAT_ID_SPLIT_RE = re.compile(r"[\s,;]+")
+
+
+@dataclass(frozen=True)
+class TelegramDeliveryFailure:
+    chat_id: str
+    reason: str
+
+
+class TelegramDeliveryError(RuntimeError):
+    """Raised after a broadcast attempts every chat and at least one send fails."""
+
+    def __init__(self, failures: list[TelegramDeliveryFailure], success_count: int) -> None:
+        self.failures = failures
+        self.success_count = success_count
+        failed = ", ".join(f"{failure.chat_id} ({failure.reason})" for failure in failures)
+        success_label = "chat" if success_count == 1 else "chats"
+        super().__init__(
+            f"telegram delivery failed for {len(failures)} chat(s): {failed}; "
+            f"{success_count} {success_label} succeeded"
+        )
+
 
 def _short_tf_label(cfg: Config) -> str:
     """User-facing short timeframe label from the active config."""
     return cfg.signals.timeframe_short
+
 
 def _mask_telegram_token(value: Any) -> str:
     """Mask Telegram bot tokens in URL-like strings for safe logging."""
@@ -28,10 +54,32 @@ def _mask_telegram_token(value: Any) -> str:
     return re.sub(r"/bot[^/]+/", "/bot***/", masked)
 
 
+def normalize_chat_ids(chat_ids: str | Iterable[str]) -> list[str]:
+    """Normalize Railway/env chat-id input into a stable, de-duplicated broadcast list.
+
+    Railway values are often pasted as comma-separated, newline-separated, semicolon-
+    separated, or plain-space-separated strings. Accept all of those forms so adding
+    another recipient does not silently turn two IDs into one invalid Telegram chat.
+    """
+    raw_values = [chat_ids] if isinstance(chat_ids, str) else chat_ids
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw in raw_values:
+        for candidate in _CHAT_ID_SPLIT_RE.split(str(raw).strip()):
+            if not candidate or candidate in seen:
+                continue
+            seen.add(candidate)
+            normalized.append(candidate)
+    return normalized
+
+
 class TelegramNotifier:
     def __init__(self, bot_token: str, chat_ids: list[str], http: httpx.AsyncClient | None = None) -> None:
         self.token = bot_token
-        self.chat_ids = chat_ids
+        self.chat_ids = normalize_chat_ids(chat_ids)
+        if not self.chat_ids:
+            raise ValueError("at least one Telegram chat id is required")
+        log.info("telegram notifier configured for %d broadcast chat(s)", len(self.chat_ids))
         self._http = http or httpx.AsyncClient(timeout=10.0)
         self._owns_http = http is None
         self._update_offset: int = 0
@@ -42,6 +90,8 @@ class TelegramNotifier:
 
     async def send(self, text: str) -> None:
         url = f"https://api.telegram.org/bot{self.token}/sendMessage"
+        failures: list[TelegramDeliveryFailure] = []
+        success_count = 0
         for chat_id in self.chat_ids:
             payload = {
                 "chat_id": chat_id,
@@ -52,10 +102,18 @@ class TelegramNotifier:
             try:
                 log.debug("telegram send request: %s", _mask_telegram_token(url))
                 r = await self._http.post(url, json=payload)
-                if r.status_code != 200:
-                    log.warning("telegram send to %s failed: %s %s", chat_id, r.status_code, r.text)
+                if r.status_code == 200:
+                    success_count += 1
+                    continue
+                reason = f"{r.status_code} {r.text}"
+                failures.append(TelegramDeliveryFailure(chat_id=chat_id, reason=reason))
+                log.warning("telegram send to %s failed: %s", chat_id, reason)
             except (TimeoutError, httpx.HTTPError) as e:
-                log.warning("telegram send to %s errored: %s", chat_id, _mask_telegram_token(e))
+                reason = _mask_telegram_token(e)
+                failures.append(TelegramDeliveryFailure(chat_id=chat_id, reason=reason))
+                log.warning("telegram send to %s errored: %s", chat_id, reason)
+        if failures:
+            raise TelegramDeliveryError(failures, success_count)
 
     async def send_to(self, chat_id: str, text: str) -> None:
         """Send a message to a specific chat (used for /start replies)."""
@@ -119,7 +177,7 @@ class TelegramNotifier:
             chat_id = str(message["chat"]["id"])
             if text == "/start":
                 log.info("received /start from chat %s", chat_id)
-                greeting = format_greeting(cfg)
+                greeting = format_greeting(cfg, subscribed=chat_id in self.chat_ids, chat_id=chat_id)
                 await self.send_to(chat_id, greeting)
 
 
@@ -327,9 +385,19 @@ def format_startup(cfg: Config, version: str) -> Alert:
     return Alert(kind="STARTUP", symbol="*", ts=utcnow(), text=text)
 
 
-def format_greeting(cfg: Config) -> str:
+def format_greeting(cfg: Config, *, subscribed: bool | None = None, chat_id: str | None = None) -> str:
     """Welcome message shown when a user sends /start to the bot."""
     pretty = ", ".join(cfg.notifier.pretty_names.get(s, s) for s in cfg.symbols)
+    subscription_text = ""
+    if subscribed is True:
+        subscription_text = "\n\n✅ <b>This chat is subscribed to broadcast signals.</b>"
+    elif subscribed is False:
+        chat_hint = f" Add <code>{escape(chat_id)}</code> to Railway TELEGRAM_CHAT_IDS." if chat_id else ""
+        subscription_text = (
+            "\n\n⚠️ <b>This chat is not in TELEGRAM_CHAT_IDS.</b>"
+            " /start replies work here, but entry/exit/heartbeat broadcasts only go to configured chat IDs."
+            f"{chat_hint}"
+        )
     return (
         "👋 <b>Welcome to crypto-flow-bot!</b>\n\n"
         "I watch Binance USD-M futures flow data and send you trade signals "
@@ -346,4 +414,5 @@ def format_greeting(cfg: Config) -> str:
         "entries and exits — you place the orders yourself on the exchange.\n\n"
         "<i>Signals are statistical heuristics, not guaranteed wins. "
         "Backtest and paper-trade before risking real capital.</i>"
+        f"{subscription_text}"
     )
