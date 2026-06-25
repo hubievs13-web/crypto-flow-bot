@@ -26,12 +26,14 @@ class _DummyHTTP:
         self.posts: list[dict[str, object]] = []
 
     async def post(self, url: str, json: dict[str, object]) -> _DummyResponse:
+        _ = url
         self.posts.append(json)
         return self.responses_by_chat_id.get(str(json["chat_id"]), _DummyResponse())
 
 
 class _ExplodingHTTP(_DummyHTTP):
     async def post(self, url: str, json: dict[str, object]) -> _DummyResponse:
+        _ = url
         self.posts.append(json)
         if json["chat_id"] == "222":
             raise TimeoutError("network timeout")
