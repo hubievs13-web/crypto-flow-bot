@@ -1,10 +1,7 @@
 import asyncio
 
-import pytest
-
 from crypto_flow_bot.config import Config, NotifierCfg
 from crypto_flow_bot.notify.telegram import (
-    TelegramDeliveryError,
     TelegramNotifier,
     format_greeting,
     normalize_chat_ids,
@@ -64,7 +61,7 @@ def test_notifier_broadcasts_to_every_normalized_chat_id():
     assert [post["chat_id"] for post in http.posts] == ["111", "222", "333", "@channel"]
 
 
-def test_send_attempts_all_chats_then_raises_for_partial_http_failure():
+def test_send_attempts_all_chats_and_reports_partial_http_failure():
     http = _DummyHTTP({"222": _DummyResponse(status_code=403, text="Forbidden")})
     notifier = TelegramNotifier(
         bot_token="123456:ABCDEF",
@@ -72,15 +69,15 @@ def test_send_attempts_all_chats_then_raises_for_partial_http_failure():
         http=http,  # type: ignore[arg-type]
     )
 
-    with pytest.raises(TelegramDeliveryError) as exc:
-        asyncio.run(notifier.send("signal"))
+    report = asyncio.run(notifier.send("signal"))
 
     assert [post["chat_id"] for post in http.posts] == ["111", "222", "333"]
-    assert exc.value.success_count == 2
-    assert [failure.chat_id for failure in exc.value.failures] == ["222"]
+    assert report.success_count == 2
+    assert [failure.chat_id for failure in report.failures] == ["222"]
+    assert notifier.last_delivery_report == report
 
 
-def test_send_attempts_all_chats_then_raises_for_partial_network_error():
+def test_send_attempts_all_chats_and_reports_partial_network_error():
     http = _ExplodingHTTP()
     notifier = TelegramNotifier(
         bot_token="123456:ABCDEF",
@@ -88,12 +85,12 @@ def test_send_attempts_all_chats_then_raises_for_partial_network_error():
         http=http,  # type: ignore[arg-type]
     )
 
-    with pytest.raises(TelegramDeliveryError) as exc:
-        asyncio.run(notifier.send("signal"))
+    report = asyncio.run(notifier.send("signal"))
 
     assert [post["chat_id"] for post in http.posts] == ["111", "222", "333"]
-    assert exc.value.success_count == 2
-    assert [failure.chat_id for failure in exc.value.failures] == ["222"]
+    assert report.success_count == 2
+    assert [failure.chat_id for failure in report.failures] == ["222"]
+    assert notifier.last_delivery_report == report
 
 
 def test_start_greeting_marks_unsubscribed_chats_so_broadcast_config_is_obvious():
